@@ -292,6 +292,10 @@
 # define SUPPORT_FIVEBARSCARA	1
 #endif
 
+#ifndef SUPPORT_FIVEAXIS
+# define SUPPORT_FIVEAXIS	1
+#endif
+
 #ifndef SUPPORT_HANGPRINTER
 # define SUPPORT_HANGPRINTER	1
 #endif
