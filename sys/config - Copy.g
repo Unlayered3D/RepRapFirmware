@@ -53,15 +53,15 @@ M92 C80 ;48.88889 ; 80 belt mm * 110*2/360 = 80 * 0.6111 = 48.88889
 
 M208 X-98:98 Y-98:98 Z0:130 B-45:135 C-3600:3600; set minimum and maximum axis limits
 
-M566 X900 Y900 Z100 ; set maximum instantaneous speed changes (mm/min)
+M566 X900 Y900 Z300 ; set maximum instantaneous speed changes (mm/min)
 M566 B900 ; (deg/min)
 M566 C900 ; (deg/min)
 
-M203 X6000 Y6000 Z1500 ; set maximum speeds (mm/min)
+M203 X6000 Y6000 Z1000 ; set maximum speeds (mm/min)
 M203 B6000; (deg/min)
 M203 C6000 ; (deg/min)
 
-M201 X1000 Y1000 Z300 ; set accelerations (mm/s^2)
+M201 X1000 Y1000 Z500 ; set accelerations (mm/s^2)
 M201 B1000 ; rotational acceleration (deg/s^2)
 M201 C1000 ; rotational acceleration (deg/s^2)
 
@@ -94,7 +94,7 @@ M308 S1 P"temp1" Y"thermistor" A"Nozzle" T100000 B4725 C7.06e-8 ; configure sens
 ; Heaters
 M950 H0 C"out0" T0 ; create heater #0
 M143 H0 P0 T0 C0 S100 A0 ; configure heater monitor #0 for heater #0
-M307 H0 R0.651 D1.83 E1.35 K1.103:0.000 S1.00 B0 ; configure model of heater #0
+M307 H0 R2.43 D5.5 E1.35 K0.56 B1 ; configure model of heater #0
 M950 H1 C"out1" T1 ; create heater #1
 M143 H1 P0 T1 C0 S300 A0 ; configure heater monitor #0 for heater #1
 M307 H1 R5.222 D11.78 E1.35 K0.506:0.000 B0 ; configure model of heater #1

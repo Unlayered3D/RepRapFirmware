@@ -5,7 +5,7 @@
 
 ; increase Z
 G91 ; relative positioning
-G1 H2 Z15 F6000 ; move Z relative to current position to avoid dragging nozzle over the bed
+G1 H2 Z5 F6000 ; move Z relative to current position to avoid dragging nozzle over the bed
 G90 ; absolute positioning
 
 ; home XY

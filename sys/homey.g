@@ -18,7 +18,7 @@ M201 Y500 C500	 ; reduce acceleration on X/Y to stop false triggers
 M915 Y C S60 R0 F1 H200	;  Sensitivity 4, don’t take action, don’t filter, 400steps/sec
 G91 											; set relative
 G1 H1 Y-200 F3000			 ; move left 250mm, stopping at the endstop
-G92 Y-95
+G92 Y-97.7
 
 G90 												; back to absolute positioning
 
