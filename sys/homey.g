@@ -10,6 +10,9 @@ M913 Y100 C100 					 ; motor currents back to 100%
 M201 Y1000 C1000			 ; accel back to original 
 M915 S63 Y C R0					 ; Disable Logging and lower stall detection
 
+M569 P0.1 S0 D3 V100 ; driver 0.1 goes backwards (YC axis)
+M569 P0.4 S1 D3 V100 ; driver 0.4 goes forwards (YC axis)
+
 M400 						; wait til stuff stops
 M574 Y1 S3 			  ; use stall guard for endstops
 M913 Y50 C50  		; drop motor currents to 50% 
@@ -17,13 +20,18 @@ M201 Y500 C500	 ; reduce acceleration on X/Y to stop false triggers
  
 M915 Y C S60 R0 F1 H200	;  Sensitivity 4, don’t take action, don’t filter, 400steps/sec
 G91 											; set relative
-G1 H1 Y-200 F3000			 ; move left 250mm, stopping at the endstop
+G1 H1 Y-200 F5000			 ; move left 250mm, stopping at the endstop
+G1 H1 Y3 F4000			 ; move left 250mm, stopping at the endstop
+G1 H1 Y-200 F4000			 ; move left 250mm, stopping at the endstop
 G92 Y-97.7
 
 G90 												; back to absolute positioning
 
+M569 P0.1 S0 D2 V100 ; driver 0.1 goes backwards (YC axis)
+M569 P0.4 S1 D2 V100 ; driver 0.4 goes forwards (YC axis)
+
 M400										 ; wait again
 M913 Y100 C100 					 ; motor currents back to 100%
-M201 Y1000 C1000			 ; accel back to original 
+M201 Y10000 C10000			 ; accel back to original 
 M915 S63 Y C R0					 ; Disable Logging and lower stall detection
-G1 Y0 F10000							; move away from end
+G1 Y0 F18000							; move away from end

@@ -5,14 +5,19 @@
 
 ; increase Z
 G91      ; relative positioning
-G1 H2 Z1 F500 ; move Z relative to current position to avoid dragging nozzle over the bed
+G1 H2 Z1 F1500 ; move Z relative to current position to avoid dragging nozzle over the bed
 G90      ; absolute positioning
 
 ; home Z
 ;var xCenter = move.compensation.probeGrid.mins[0] + (move.compensation.probeGrid.maxs[0] - move.compensation.probeGrid.mins[0]) / 2 - sensors.probes[0].offsets[0]
 ;var yCenter = move.compensation.probeGrid.mins[1] + (move.compensation.probeGrid.maxs[1] - move.compensation.probeGrid.mins[1]) / 2 - sensors.probes[0].offsets[1]
 G1 X0 Y0 B0 C0 F6000 ; go to bed centre
+
+M558 K0 P8 C"io6.in" H5 F1500 T6000 ; configure unfiltered digital probe via slot #0
 G30      ; probe the bed
 
-G92 X0 Z40.7
+M558 K0 P8 C"io6.in" H5 F120 T6000 ; configure unfiltered digital probe via slot #0
+G30      ; probe the bed
+
+G92 X0 Z37.0  ;40.8
 

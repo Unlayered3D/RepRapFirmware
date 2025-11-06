@@ -22,12 +22,12 @@ M552 S1 ; configure WiFi adapter
 M586 P0 S1 ; configure HTTP
 
 ; Smart Drivers
-M569 P0.0 S1 D3 V100 ; driver 0.0 goes forward (XB axis)
-M569 P0.1 S0 D3 V100 ; driver 0.1 goes backwards (YC axis)
-M569 P0.2 S1 D3 V100 ; driver 0.2 goes forwards (Z axis)
-M569 P0.3 S0 D3 V100 ; driver 0.3 goes backwards (XB axis)
-M569 P0.4 S1 D3 V100 ; driver 0.4 goes forwards (YC axis)
-M569 P0.5 S1 D3 V2000 ; driver 0.5 goes forwards (extruder 0)
+M569 P0.0 S1 D2 V100 ; driver 0.0 goes forward (XB axis)
+M569 P0.1 S0 D2 V100 ; driver 0.1 goes backwards (YC axis)
+M569 P0.2 S1 D2 V100 ; driver 0.2 goes forwards (Z axis)
+M569 P0.3 S0 D2 V100 ; driver 0.3 goes backwards (XB axis)
+M569 P0.4 S1 D2 V100 ; driver 0.4 goes forwards (YC axis)
+M569 P0.5 S1 D2 V2000 ; driver 0.5 goes forwards (extruder 0)
 
 ; Motor Idle Current Reduction
 M906 I30 ; set motor current idle factor
@@ -57,13 +57,13 @@ M566 X900 Y900 Z100 ; set maximum instantaneous speed changes (mm/min)
 M566 B900 ; (deg/min)
 M566 C900 ; (deg/min)
 
-M203 X6000 Y6000 Z1500 ; set maximum speeds (mm/min)
-M203 B6000; (deg/min)
-M203 C6000 ; (deg/min)
+M203 X18000 Y18000 Z1500 ; set maximum speeds (mm/min)
+M203 B18000; (deg/min)
+M203 C18000 ; (deg/min)
 
-M201 X1000 Y1000 Z300 ; set accelerations (mm/s^2)
-M201 B1000 ; rotational acceleration (deg/s^2)
-M201 C1000 ; rotational acceleration (deg/s^2)
+M201 X10000 Y10000 Z500 ; set accelerations (mm/s^2)
+M201 B10000 ; rotational acceleration (deg/s^2)
+M201 C10000 ; rotational acceleration (deg/s^2)
 
 ; Extruders
 M584 E0.5 ; set extruder mapping
@@ -97,8 +97,7 @@ M143 H0 P0 T0 C0 S100 A0 ; configure heater monitor #0 for heater #0
 M307 H0 R0.651 D1.83 E1.35 K1.103:0.000 S1.00 B0 ; configure model of heater #0
 M950 H1 C"out1" T1 ; create heater #1
 M143 H1 P0 T1 C0 S300 A0 ; configure heater monitor #0 for heater #1
-M307 H1 R5.222 D11.78 E1.35 K0.506:0.000 B0 ; configure model of heater #1
-
+;M307 H1 S1.0 R4.929 D25 E1.35 K0.584 B0 V23.5; configure model of heater #1 13.29 0.584
 ; Heated beds
 M140 P0 H0 ; configure heated bed #0
 
@@ -108,10 +107,16 @@ M106 P0 S0 L0 X1 B0.1 ; configure fan #0
 M950 F1 C"out5" ; create fan #1
 M106 P1 S0 B0.1 H1 T45 ; configure fan #1
 
+
 ; Tools
 M563 P0 D0 H1 F0 ; create tool #0
 M568 P0 R0 S0 ; set initial tool #0 active and standby temperatures to 0C
 
 ; Miscellaneous
 T0 ; select first tool
-M552 s3;
+
+M301 H1 P1.4 I0.015 D0
+
+M955 P0 C"spi.cs2+spi.cs1" ; tell the thing that the accelerometer exists
+
+M593 P"zvdd" F47 ;Configer the input shaper
