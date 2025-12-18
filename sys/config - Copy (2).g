@@ -10,13 +10,13 @@
 ; THis is similar to how CoreXYUV is named 
 ;
 ; General
-global wipespeed = 8000
-global linspeed = 36000
+
+global linspeed = 18000
 global zspeed = 10500
-global linaccel = 10000
-global zaccel = 5000
+global linaccel = 2000
+global zaccel = 2000
 global zdiveheight = 2.5
-global ztrigger = 35.09 ; 35.05 35.07 INCREASE NUMBER TO LOWER ON BED
+global ztrigger = 31.95 ; 32.15
 
 G90 ; absolute coordinates
 M83 ; relative extruder moves
@@ -115,9 +115,6 @@ M106 P0 S0 L0 X1 B0.1 ; configure fan #0
 M950 F1 C"out5" ; create fan #1
 M106 P1 S0 B0.1 H1 T45 ; configure fan #1
 
-M950 F2 C"out4" ; create fan #2 for aux bed cooling
-M106 P2 S0 L0 X1 B0.1 ; turn off fan #2
-
 
 ; Tools
 M563 P0 D0 H1 F0 ; create tool #0
@@ -126,13 +123,9 @@ M568 P0 R0 S0 ; set initial tool #0 active and standby temperatures to 0C
 ; Miscellaneous
 T0 ; select first tool
 
-M301 H1 P3.45 I0.004 D40
-M304 P300 I5 D0
-M570 H0 P30 T5
-
+M301 H1 P1.5 I0.01 D0.005
+M304 P300 I10 D0
 
 M955 P0 C"spi.cs2+spi.cs1" ; tell the thing that the accelerometer exists
 
-M593 P"zvd" F47 ;Configer the input shaper
-M572 D0 S0.02 ;Enable pressure advance
-M309 S0=.00497 ;heater feedforwards. Conserviative value so it should work somewhat well for all filaments
+M593 P"zvddd" F47 ;Configer the input shaper

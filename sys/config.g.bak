@@ -10,6 +10,14 @@
 ; THis is similar to how CoreXYUV is named 
 ;
 ; General
+global wipespeed = 8000
+global linspeed = 36000
+global zspeed = 10500
+global linaccel = 10000
+global zaccel = 5000
+global zdiveheight = 2.5
+global ztrigger = 35.12 ; 35.05 35.07 INCREASE NUMBER TO LOWER ON BED
+
 G90 ; absolute coordinates
 M83 ; relative extruder moves
 M550 P"Unlayered 5X Printer" ; set hostname
@@ -53,23 +61,23 @@ M92 C80 ;48.88889 ; 80 belt mm * 110*2/360 = 80 * 0.6111 = 48.88889
 
 M208 X-98:98 Y-98:98 Z0:130 B-45:135 C-3600:3600; set minimum and maximum axis limits
 
-M566 X900 Y900 Z100 ; set maximum instantaneous speed changes (mm/min)
-M566 B900 ; (deg/min)
-M566 C900 ; (deg/min)
+M566 X300 Y300 Z100 ; set maximum instantaneous speed changes (mm/min)
+M566 B300 ; (deg/min)
+M566 C300 ; (deg/min)
 
-M203 X6000 Y6000 Z1500 ; set maximum speeds (mm/min)
-M203 B6000; (deg/min)
-M203 C6000 ; (deg/min)
+M203 X{global.linspeed} Y{global.linspeed} Z{global.zspeed} ; set maximum speeds (mm/min)
+M203 B{global.linspeed}; (deg/min)
+M203 C{global.linspeed}; (deg/min)
 
-M201 X1000 Y1000 Z300 ; set accelerations (mm/s^2)
-M201 B1000 ; rotational acceleration (deg/s^2)
-M201 C1000 ; rotational acceleration (deg/s^2)
+M201 X{global.linaccel} Y{global.linaccel} Z{global.zaccel} ; set accelerations (mm/s^2)
+M201 B{global.linaccel} ; rotational acceleration (deg/s^2)
+M201 C{global.linaccel} ; rotational acceleration (deg/s^2)
 
 ; Extruders
 M584 E0.5 ; set extruder mapping
-M350 E16 I1 ; configure microstepping with interpolation
+M350 E256 I1 ; configure microstepping with interpolation
 M906 E1000 ; set extruder driver currents
-M92 E420 ; configure steps per mm
+M92 E6720 ; configure steps per mm
 M566 E120 ; set maximum instantaneous speed changes (mm/min)
 M203 E3600 ; set maximum speeds (mm/min)
 M201 E250 ; set accelerations (mm/s^2)
@@ -79,8 +87,8 @@ M669 K16; configure 5 axis kinematics
 ; 15 and 17 are other modes
 
 ; Probes
-M558 K0 P8 C"io6.in" H5 F120 T6000 ; configure unfiltered digital probe via slot #0
-G31 P500 X0 Y0 Z0.7                ; set Z probe trigger value, offset and trigger height
+M558 K0 P8 C"io6.in" H{global.zdiveheight} F120 T6000 ; configure unfiltered digital probe via slot #0
+G31 P500 X39 Y11.5 Z{global.ztrigger}               ; set Z probe trigger value, offset and trigger height
 
 ; Endstops
 M574 X0 ; configure X axis endstop
@@ -107,6 +115,9 @@ M106 P0 S0 L0 X1 B0.1 ; configure fan #0
 M950 F1 C"out5" ; create fan #1
 M106 P1 S0 B0.1 H1 T45 ; configure fan #1
 
+M950 F2 C"out4" ; create fan #2 for aux bed cooling
+M106 P2 S0 L0 X1 B0.1 ; turn off fan #2
+
 
 ; Tools
 M563 P0 D0 H1 F0 ; create tool #0
@@ -115,8 +126,13 @@ M568 P0 R0 S0 ; set initial tool #0 active and standby temperatures to 0C
 ; Miscellaneous
 T0 ; select first tool
 
-M301 H1 P1.4 I0.015 D0
+M301 H1 P3.45 I0.004 D40
+M304 P300 I5 D0
+M570 H0 P30 T5
+
 
 M955 P0 C"spi.cs2+spi.cs1" ; tell the thing that the accelerometer exists
 
-M593 P"zvdd" F47 ;Configer the input shaper
+M593 P"zvd" F47 ;Configer the input shaper
+M572 D0 S0.02 ;Enable pressure advance
+M309 S0=.00497 ;heater feedforwards. Conserviative value so it should work somewhat well for all filaments

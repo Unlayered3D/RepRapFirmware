@@ -5,5 +5,5 @@
 
 G11
 M98 P"wipe.g"
-G1 R1 X0 Y0 Z5 F30000 ; go to 5mm above position of the last move
-G1 R1 X0 Y0 Z0 F1500; go back to the last print move
+G1 X0 Y0 Z5 F10500 R1 ; go to 5mm above position of the last move
+G1 X0 Y0 Z0 F10500 R1; go back to the last print move

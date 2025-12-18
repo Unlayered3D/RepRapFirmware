@@ -62,9 +62,13 @@ private:
 	// Derived parameters
 	FixedMatrix<float, MaxAxes, MaxAxes> forwardMatrix;	// maps motor positions to coordinates
 	LogicalDrivesBitmap controllingDrivers[MaxAxes];// which drives control each axis
-	bool modified;							// true if matrix has been altered
+
+
 	uint8_t firstMotor[MaxAxes], lastMotor[MaxAxes];// first and last motor used by each axis
 	uint8_t firstAxis[MaxAxes], lastAxis[MaxAxes];// first and last axis that each motor controls
+
+	bool modified;							// true if matrix has been altered
+	float a5, d6;
 };
 
 #endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */

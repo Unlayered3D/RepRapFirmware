@@ -1,52 +1,60 @@
-G1 X100 Y-97 Z10 B90 C0 F30000
-G91
-G1 H2 X22.5 Z-17 B2.5
-G1 H2 Z-3
 
-G1 H2 X-13 B5 Z4
-G1 H2 X13 B-5 Z-4
+G1 X97 Y-97 Z40 B90 C0 F{global.wipespeed}
 
-G1 H2 X-13 B5 Z4
-G1 H2 X13 B-5 Z-4
+M564 S0
 
-G1 H2 X-13 B5 Z4
-G1 H2 X13 B-5 Z-4
+G1 X138 Y-97 Z40.0 B128 C0 F{global.wipespeed}
+G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+G1 X124 Y-97 Z-7.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X-13 B5 Z4
-G1 H2 X13 B-5 Z-4
+G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+G1 X124 Y-97 Z-7.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X-13 B5 Z4
-G1 H2 Z-2 X6 B-6
+G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+G1 X124 Y-97 Z-7.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X4.5 B4.5
+G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+G1 X124 Y-97 Z-7.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X-15 B-15
-G1 H2 X15 B15
+G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+G1 X124 Y-97 Z-7.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X-15 B-15
-G1 H2 X15 B15
 
-G1 H2 X-15 B-15
-G1 H2 X15 B15
+;pad
 
-G1 H2 X-15 B-15
-G1 H2 X15 B15
+G1 X122 Y-97 Z-5.5 B107 C0 F{global.wipespeed}
+G1 X112 Y-97 Z-5.5 B93 C0 F{global.wipespeed}
 
-G1 H2 X-15 B-15
-G1 H2 X15 B15
+G1 X122 Y-97 Z-5.5 B107 C0 F{global.wipespeed}
+G1 X112 Y-97 Z-5.5 B93 C0 F{global.wipespeed}
+G1 X122 Y-97 Z-5.5 B107 C0 F{global.wipespeed}
+G1 X112 Y-97 Z-5.5 B93 C0 F{global.wipespeed}
 
-G1 H2 X-4.5 B-4.5
-
-G1 H2 Z2 X-6 B6
-G1 H2 X13 B-5 Z-4
+G1 X122 Y-97 Z-5.5 B107 C0 F{global.wipespeed}
+G1 X112 Y-97 Z-5.5 B93 C0 F{global.wipespeed}
+G1 X122 Y-97 Z-5.5 B107 C0 F{global.wipespeed}
+G1 X112 Y-97 Z-5.5 B93 C0 F{global.wipespeed}
 
 
 
+;G1 X138 Y-97 Z20.0 B128 C0 F{global.wipespeed}
+;G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+;G1 X124 Y-97 Z-8.0 B112 C0 F{global.wipespeed}
 
-G1 H2 Z3
+;G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+;G1 X124 Y-97 Z-8.0 B112 C0 F{global.wipespeed}
 
-G1 H2 X-22.5 Z17 B-2.5
+;G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+;G1 X124 Y-97 Z-8.0 B112 C0 F{global.wipespeed}
 
-G90
+;G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+;G1 X124 Y-97 Z-8.0 B112 C0 F{global.wipespeed}
 
-G1 X100 Y-90 Z10 B90 C0 F30000
+;G1 X138 Y-97 Z-7.0 B128 C0 F{global.wipespeed}
+;G1 X124 Y-97 Z-8.0 B112 C0 F{global.wipespeed}
+
+G1 X97 Y-97 Z20 B90 C0 F{global.wipespeed}
+
+;
+
+M564 S1

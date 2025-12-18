@@ -404,19 +404,24 @@ void LocalHeater::Spin() noexcept
 					const PidParameters& params = GetModel().GetPidParameters(inLoadMode);
 
 					// If the P and D terms together demand that the heater is full on or full off, disregard the I term
+					//clamps the accumulated value only if integral tries to saturate it further
 					const float errorMinusDterm = error - (params.tD * derivative);
 					const float pPlusD = params.kP * errorMinusDterm;
 					const float expectedPwm = GetModel().EstimateRequiredPwm(temperature - NormalAmbientTemperature, lastFanPwm);
-					if (pPlusD + expectedPwm > GetModel().GetMaxPwm())
+
+					//added term to check if error is positive
+					if (pPlusD + expectedPwm > GetModel().GetMaxPwm() && error > 0.0)
 					{
 						lastPwm = GetModel().GetMaxPwm();
 						// If we are heating up, preset the I term to the expected PWM at this temperature, ready for the switch over to PID
-						if (mode == HeaterMode::heating && error > 0.0 && derivative > 0.0)
+						//removed error > 0 check since its done in parent if case
+						if (mode == HeaterMode::heating && derivative > 0.0)
 						{
 							iAccumulator = expectedPwm;
 						}
 					}
-					else if (pPlusD + expectedPwm < 0.0)
+					//added term to check if error is negative
+					else if (pPlusD + expectedPwm < 0.0 && error < 0.0)
 					{
 						lastPwm = 0.0;
 					}

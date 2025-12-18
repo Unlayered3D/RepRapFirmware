@@ -164,9 +164,8 @@ inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 	return controllingDrivers[axis] != LogicalDrivesBitmap::MakeFromBits(axis);
 }
 const static uint8_t COS_ID = 2, SIN_ID = 3, N_COS_ID = 4, N_SIN_ID = 5;
-const static float a5 = 2.5f, d6 = 43.4f;
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-										ZLeadscrewKinematics(k), modified(false) {
+										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), modified(false) {
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
 	inverseMatrix.Fill(0.0);
 	rotationMatrix1.Fill(0);
@@ -300,6 +299,7 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	}
 
 	bool seen = gb.Seen('K');
+
 	const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();
 	for (size_t axis = 0; axis < numVisibleAxes; ++axis) {
 		if (gb.Seen(reprap.GetGCodes().GetAxisLetters()[axis])) {
@@ -323,6 +323,9 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	}
 
 	const bool seenSeg = TryConfigureSegmentation(gb);// configure optional segmentation
+	gb.TryGetFValue('A', a5, seen);
+	gb.TryGetFValue('D', d6, seen);
+	reply.printf("A is now %.2f, D is now %.2f", (double)a5, (double)d6);
 
 	if (seen) {
 		Recalc();

@@ -5,38 +5,42 @@
 
 G92 B0 C0
 
+
+
 G90 												; back to absolute positioning
 M400										 ; wait again
 M913 X100 					 ; motor currents back to 100%
-M201 X1000			 ; accel back to original 
 M915 S63 X B R0					 ; Disable Logging and lower stall detection
 
 M569 P0.0 S1 D3 V100 ; 
 M569 P0.3 S0 D3 V100 ; driver 0.3 goes backwards (XB axis)
 
 M400 						; wait til stuff stops
+
 M574 X1 S3 			  ; use stall guard for endstops
 
 M913 X50  		; drop motor currents to 50% 
-M201 X500 B500	 ; reduce acceleration on X/Y to stop false triggers
- 
-M915 X S63 R0 F0 H200	;  Sensitivity 4, don’t take action, filter, 400steps/sec
+M201.1 X1000 B1000	 ; reduce acceleration on X/Y to stop false triggers
+
+M915 X S40 R0 F0 H200	;  Sensitivity 4, don’t take action, filter, 400steps/sec
 G91 											; set relative
-G1 H1 X200 F5000			 ; move left 250mm, stopping at the endstop
-G1 H1 X-5 F5000			 ; move left 250mm, stopping at the endstop
-G1 H1 X200 F5000			 ; move left 250mm, stopping at the endstop
-G1 H1 X-5 F5000			 ; move left 250mm, stopping at the endstop
-G1 H1 X200 F5000			 ; move left 250mm, stopping at the endstop
+G1 H1 X200 F4000			 ; move left 250mm, stopping at the endstop
+G1 H1 X-5 F4000			 ; move left 250mm, stopping at the endstop
+G1 H1 X200 F4000			 ; move left 250mm, stopping at the endstop
+G1 H1 X-5 F4000			 ; move left 250mm, stopping at the endstop
+G1 H1 X200 F4000			 ; move left 250mm, stopping at the endstop
 M400
 
 ; time to home b as well
 
 M569 P0.0 S0 D3 V100 ; flips the motor
+M915 X S40 R0 F0 H200	;  Sensitivity 4, don’t take action, filter, 400steps/sec
+
+G1 H1 X200 F4000		 ; rotate
+G1 H1 X-3 F4000		 ; rotate
 G1 H1 X200 F4000			 ; rotate
-G1 H1 X-3 F4000			 ; rotate
-G1 H1 X200 F4000			 ; rotate
-G1 H1 X-3 F4000			 ; rotate
-G1 H1 X200 F4000			 ; rotate
+G1 H1 X-3 F4000		 ; rotate
+G1 H1 X200 F4000		 ; rotate
 G92 B-45.0
 
 ; back to normal control
@@ -44,11 +48,14 @@ G92 B-45.0
 M569 P0.0 S1 D2 V100 ; driver 0.0 goes forwards (XB axis)
 M569 P0.3 S0 D2 V100 ; driver 0.3 goes backwards (XB axis)
 
-G1 B0 F2000 ;move done here to be happy
-G92 X84.1
+G1 B0 F6000	 ;move done here to be happy
+G92 X82.4
 G90 												; back to absolute positioning
 M400										 ; wait again
 M913 X100 					 ; motor currents back to 100%
-M201 X10000 B10000 			 ; accel back to original 
 M915 S63 X B R0					 ; Disable Logging and lower stall detection
-G1 X0 B0 F18000							; move away from end
+
+
+G0 H2 X0 B0 F6000					; move away from end
+
+G92 B0 C0
