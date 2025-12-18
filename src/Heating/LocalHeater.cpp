@@ -406,21 +406,26 @@ void LocalHeater::Spin() noexcept
 					// If the P and D terms together demand that the heater is full on or full off, disregard the I term
 					//clamps the accumulated value only if integral tries to saturate it further
 					const float errorMinusDterm = error - (params.tD * derivative);
-					const float pPlusD = params.kP * errorMinusDterm;
 					const float expectedPwm = GetModel().EstimateRequiredPwm(temperature - NormalAmbientTemperature, lastFanPwm);
+					const float pPlusD = params.kP * errorMinusDterm  + expectedPwm;
 
-					//added term to check if error is positive
+					if (error < -3.0 && iAccumulator > 0) { //if we are overshot by a lot, reduce the integral term quickly towards the expected PWM
+						iAccumulator = (iAccumulator) / 8.0;
+
+					}
+
+					//Check if we are saturated AND that integration will make it worse
 					if (pPlusD + expectedPwm > GetModel().GetMaxPwm() && error > 0.0)
 					{
 						lastPwm = GetModel().GetMaxPwm();
 						// If we are heating up, preset the I term to the expected PWM at this temperature, ready for the switch over to PID
-						//removed error > 0 check since its done in parent if case
 						if (mode == HeaterMode::heating && derivative > 0.0)
 						{
-							iAccumulator = expectedPwm;
+							//iAccumulator = expectedPwm;
+
 						}
 					}
-					//added term to check if error is negative
+					//Negative saturation check
 					else if (pPlusD + expectedPwm < 0.0 && error < 0.0)
 					{
 						lastPwm = 0.0;
@@ -433,6 +438,7 @@ void LocalHeater::Spin() noexcept
 											0.0, GetModel().GetMaxPwm());
 						lastPwm = constrain<float>(pPlusD + iAccumulator, 0.0, GetModel().GetMaxPwm());
 					}
+			    	//replyprintf("e=%f, P=%f, I=%f, d=%f, r=%f\n", error, params.kP*error, iAccumulator, (params.tD * derivative), lastPwm);
 #if HAS_VOLTAGE_MONITOR
 					// Scale the PID based on the current voltage vs. the calibration voltage
 					if (!reprap.GetHeat().IsBedOrChamberHeater(GetHeaterNumber()))
@@ -505,7 +511,7 @@ void LocalHeater::Spin() noexcept
 		// take action if there is a significant delay since the time of last sampling.
 		lastSampleTime = millis();
 
-//  	debugPrintf("Heater %d: e=%f, P=%f, I=%f, d=%f, r=%f\n", heater, error, pp.kP*error, temp_iState, temp_dState, result);
+
 	}
 }
 

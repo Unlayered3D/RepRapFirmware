@@ -120,7 +120,7 @@ bool FopDt::SetParameters(const CanMessageHeaterModelNewNew& msg, const StringRe
 
 		if (msg.pidParametersOverridden)
 		{
-			SetRawPidParameters(msg.kP, msg.recipTi, msg.tD);
+			SetRawPidParameters(msg.kP, msg.recipTi, msg.tD, msg.kP2, msg.recipTi2, msg.tD2);
 		}
 		else
 		{
@@ -185,17 +185,20 @@ M301PidParameters FopDt::GetM301PidParameters(bool forLoadChange) const noexcept
 	return rslt;
 }
 
-// Override the PID parameters. We set both sets to the same parameters.
-void FopDt::SetM301PidParameters(const M301PidParameters& pp) noexcept
+// Override the PID parameters. We DO NOT set both sets to the same parameters.
+void FopDt::SetM301PidParameters(const M301PidParameters& pp, const M301PidParameters& pp2) noexcept
 {
-	SetRawPidParameters(pp.kP * (1.0/255.0), pp.kI/pp.kP, pp.kD/pp.kP);
+	SetRawPidParameters(pp.kP * (1.0/255.0), pp.kI/pp.kP, pp.kD/pp.kP, pp2.kP * (1.0/255.0), pp2.kI/pp2.kP, pp2.kD/pp2.kP);
 }
 
-void FopDt::SetRawPidParameters(float p_kP, float p_recipTi, float p_tD) noexcept
+void FopDt::SetRawPidParameters(float p_kP, float p_recipTi, float p_tD, float p_kP2, float p_recipTi2, float p_tD2) noexcept
 {
-	loadChangeParams.kP = setpointChangeParams.kP = p_kP;
-	loadChangeParams.recipTi = setpointChangeParams.recipTi = p_recipTi;
-	loadChangeParams.tD = setpointChangeParams.tD = p_tD;
+	setpointChangeParams.kP = p_kP;
+	setpointChangeParams.recipTi = p_recipTi;
+	setpointChangeParams.tD = p_tD;
+	loadChangeParams.kP = p_kP2;
+	loadChangeParams.recipTi = p_recipTi2;
+	loadChangeParams.tD = p_tD2;
 	pidParametersOverridden = true;
 }
 
@@ -228,7 +231,8 @@ void FopDt::AppendM301Command(unsigned int heaterNumber, const StringRef& str) c
 	if (pidParametersOverridden)
 	{
 		const M301PidParameters pp = GetM301PidParameters(false);
-		str.catf("M301 H%u P%.1f I%.3f D%.1f\n", heaterNumber, (double)pp.kP, (double)pp.kI, (double)pp.kD);
+		const M301PidParameters pp2 = GetM301PidParameters(true);
+		str.catf("M301 H%u P%.1f I%.3f D%.1f P2%.1f I2%.3f D2%.1f\n", heaterNumber, (double)pp.kP, (double)pp.kI, (double)pp.kD, (double)pp2.kP, (double)pp2.kI, (double)pp2.kD);
 	}
 }
 

@@ -185,14 +185,40 @@ GCodeResult Heat::SetPidParameters(unsigned int heater, GCodeBuffer& gb, const S
 	{
 		const FopDt& model = h->GetModel();
 		M301PidParameters pp = model.GetM301PidParameters(false);
+		M301PidParameters pp2 = model.GetM301PidParameters(true);
 		bool seen = false;
-		gb.TryGetFValue('P', pp.kP, seen);
-		gb.TryGetFValue('I', pp.kI, seen);
-		gb.TryGetFValue('D', pp.kD, seen);
+		float values[2];
+		size_t numValues = 2;
+		if (gb.Seen('P'))
+			{
+				    gb.GetFloatArray(values, numValues, false);
+				    pp.kP = values[0];
+				    pp2.kP = (numValues > 1) ? values[1] : values[0];
+				    seen = true;
+				}
+
+				if (gb.Seen('I'))
+				{
+				    numValues = 2;
+				    gb.GetFloatArray(values, numValues, false);
+				    pp.kI = values[0];
+				    pp2.kI = (numValues > 1) ? values[1] : values[0];
+				    seen = true;
+				}
+
+				if (gb.Seen('D'))
+				{
+				    numValues = 2;
+				    gb.GetFloatArray(values, numValues, false);
+				    pp.kD = values[0];
+				    pp2.kD = (numValues > 1) ? values[1] : values[0];
+				    seen = true;
+				}
 
 		if (seen)
 		{
-			h->SetM301PidParameters(pp);
+
+			h->SetM301PidParameters(pp, pp2);
 			reprap.HeatUpdated();
 		}
 		else if (!model.UsePid())
@@ -201,7 +227,7 @@ GCodeResult Heat::SetPidParameters(unsigned int heater, GCodeBuffer& gb, const S
 		}
 		else if (model.ArePidParametersOverridden())
 		{
-			reply.printf("Heater %d P:%.1f I:%.3f D:%.1f", heater, (double)pp.kP, (double)pp.kI, (double)pp.kD);
+			reply.printf("M301 OUTPUT: Heater %d P:%.1f I:%.3f D:%.1f P2:%.1f I2:%.3f D2:%.1f", heater, (double)pp.kP, (double)pp.kI, (double)pp.kD, (double)pp2.kP, (double)pp2.kI, (double)pp2.kD);
 		}
 		else
 		{

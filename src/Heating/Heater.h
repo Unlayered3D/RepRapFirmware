@@ -97,8 +97,8 @@ public:
 	bool IsHeaterEnabled() const noexcept								// Is this heater enabled?
 		{ return model.IsEnabled(); }
 
-	void SetM301PidParameters(const M301PidParameters& params) noexcept
-		{ model.SetM301PidParameters(params); }
+	void SetM301PidParameters(const M301PidParameters& params, const M301PidParameters& params2) noexcept
+		{ model.SetM301PidParameters(params, params2); }
 
 	void ClearModelAndMonitors() noexcept;
 	void SetAsToolHeater() noexcept;

@@ -77,7 +77,7 @@ public:
 	// Derived parameters
 	bool ArePidParametersOverridden() const noexcept { return pidParametersOverridden; }
 	M301PidParameters GetM301PidParameters(bool forLoadChange) const noexcept;
-	void SetM301PidParameters(const M301PidParameters& params) noexcept;
+	void SetM301PidParameters(const M301PidParameters& params, const M301PidParameters& params2) noexcept;
 
 	const PidParameters& GetPidParameters(bool forLoadChange) const noexcept
 	{
@@ -97,7 +97,7 @@ protected:
 
 private:
 	float GetCoolingRate(float temperatureRise, float fanPwm) const noexcept;
-	void SetRawPidParameters(float p_kP, float p_recipTi, float p_tD) noexcept;
+	void SetRawPidParameters(float p_kP, float p_recipTi, float p_tD, float p_kP2, float p_recipTi2, float p_tD2) noexcept;
 	static float EstimateMaxTemperatureRise(float hr, float cr, float cre) noexcept;
 
 	float heatingRate;						// the rate at which the heater heats up at full PWM with no cooling

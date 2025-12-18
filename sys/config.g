@@ -25,10 +25,6 @@ M550 P"Unlayered 5X Printer" ; set hostname
 ; Accessories
 M575 P1 S0 B57600 ; configure PanelDue support
 
-; Network
-M552 S1 ; configure WiFi adapter
-M586 P0 S1 ; configure HTTP
-
 ; Smart Drivers
 M569 P0.0 S1 D2 V100 ; driver 0.0 goes forward (XB axis)
 M569 P0.1 S0 D2 V100 ; driver 0.1 goes backwards (YC axis)
@@ -101,11 +97,11 @@ M308 S1 P"temp1" Y"thermistor" A"Nozzle" T100000 B4725 C7.06e-8 ; configure sens
 
 ; Heaters
 M950 H0 C"out0" T0 ; create heater #0
-M143 H0 P0 T0 C0 S100 A0 ; configure heater monitor #0 for heater #0
+M143 H0 P0 T0 C0 S130 A0 ; configure heater monitor #0 for heater #0
 M307 H0 R0.651 D1.83 E1.35 K1.103:0.000 S1.00 B0 ; configure model of heater #0
 M950 H1 C"out1" T1 ; create heater #1
-M143 H1 P0 T1 C0 S300 A0 ; configure heater monitor #0 for heater #1
-;M307 H1 S1.0 R4.929 D25 E1.35 K0.584 B0 V23.5; configure model of heater #1 13.29 0.584
+M143 H1 P0 T1 C0 S310 A0 ; configure heater monitor #0 for heater #1
+M307 H1 S1.0 R4.929 D25 E1.00 K0.584 B0 V23.5; configure model of heater #1 13.29 0.584
 ; Heated beds
 M140 P0 H0 ; configure heated bed #0
 
@@ -126,7 +122,7 @@ M568 P0 R0 S0 ; set initial tool #0 active and standby temperatures to 0C
 ; Miscellaneous
 T0 ; select first tool
 
-M301 H1 P3.45 I0.004 D40
+M301 H1 P4:6 I0.004:0.1 D20:30
 M304 P300 I5 D0
 M570 H0 P30 T5
 
@@ -136,3 +132,8 @@ M955 P0 C"spi.cs2+spi.cs1" ; tell the thing that the accelerometer exists
 M593 P"zvd" F47 ;Configer the input shaper
 M572 D0 S0.02 ;Enable pressure advance
 M309 S0=.00497 ;heater feedforwards. Conserviative value so it should work somewhat well for all filaments
+
+G4 P5000
+; Network
+M552 S1 ; configure WiFi adapter
+M586 P0 S1 ; configure HTTP
