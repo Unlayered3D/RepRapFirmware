@@ -16,7 +16,7 @@ global zspeed = 10500
 global linaccel = 10000
 global zaccel = 5000
 global zdiveheight = 2.5
-global ztrigger = 35.09 ; 35.05 35.07 INCREASE NUMBER TO LOWER ON BED
+global ztrigger = 36.04 ;35.09 ; 35.05 35.07 INCREASE NUMBER TO LOWER ON BED
 
 G90 ; absolute coordinates
 M83 ; relative extruder moves
