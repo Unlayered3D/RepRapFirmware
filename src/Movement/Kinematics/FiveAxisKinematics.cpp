@@ -102,6 +102,10 @@ void FiveAxisKinematics::Recalc() noexcept {
 			reprap.GetPlatform().Message(ErrorMessage,
 					"Invalid kinematics matrix\n");
 		}
+
+
+
+
 	}
 
 	// Calculate the first and last motors for each axis, and first and last axis controlled by each motor.
@@ -165,7 +169,7 @@ inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 }
 const static uint8_t COS_ID = 2, SIN_ID = 3, N_COS_ID = 4, N_SIN_ID = 5;
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), modified(false) {
+										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), s6(0.0f), modified(false) {
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
 	inverseMatrix.Fill(0.0);
 	rotationMatrix1.Fill(0);
@@ -249,17 +253,18 @@ FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 		 *  0 0
 		 */
 
-		/* stedmans matrix
-		 *  c-s
-		 *  0 0
-		 *  s c
-		 *  0 0
-		 *  0 0
+		/* stedmans matrix also now applies a cross axis skew to Y based on new constant
+		 *  c 0-s
+		 *  0 s 0
+		 *  s 0 c
+		 *  0 0 0
+		 *  0 0 0
 		 */
 		rotationMatrix2(0,0) = SIN_ID;
 		rotationMatrix2(0,1) = COS_ID;
+		rotationMatrix2(1,1) = SIN_ID;
 		rotationMatrix2(2,0) = N_COS_ID;
-		rotationMatrix2(2,1) = SIN_ID;
+		rotationMatrix2(2,2) = SIN_ID;
 
 		break;
 	}
@@ -325,7 +330,8 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	const bool seenSeg = TryConfigureSegmentation(gb);// configure optional segmentation
 	gb.TryGetFValue('A', a5, seen);
 	gb.TryGetFValue('D', d6, seen);
-	reply.printf("A is now %.2f, D is now %.2f", (double)a5, (double)d6);
+	gb.TryGetFValue('S', s6, seen);
+	reply.printf("A is now %.2f, D is now %.2f, S is now %.2f", (double)a5, (double)d6, (double)s6);
 
 	if (seen) {
 		Recalc();
@@ -370,6 +376,7 @@ float FiveAxisKinematics::getRotationMatrixValue(uint8_t num, float cosN, float 
 // Convert Cartesian coordinates to motor coordinates returning true if successful.
 // This is called frequently, so try to keep it efficient.
 // If a motor has no visible axes that affect it, leave the old motor coordinate unchanged.
+float pastC = 0.0f;
 MovementError FiveAxisKinematics::CartesianToMotorSteps(
 		const float machinePos[], const float stepsPerMm[],
 		size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[],
@@ -377,26 +384,36 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 	MovementError rslt = MovementError::ok;
 	//TODO apply inverse kinematics
 
-
+	//initialize the machine pos
 	float rotatedMachinePos[] = {0.0, 0.0, 0.0, 0.0, 0.0};
 
+	//get the factors of the current B and C axes. T5 is the B, T1 is the C
 	float cosT5 = cos(M_PI/180.0*machinePos[3]);
 	float sinT5 = sin(M_PI/180.0*machinePos[3]);
 	float cosT1 = cos(M_PI/180.0*machinePos[4]);
 	float sinT1 = sin(M_PI/180.0*machinePos[4]);
 
+	//iterate over the axes to calculate real values
 	for(size_t i = 0; i < numTotalAxes; ++i){
 
 		for(size_t j = 0; j < numTotalAxes; ++j){
 
+			//run the bed rotation logic in this case. This translation is only applied to x and y in our case.
 			rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix1(i,j), cosT1, sinT1)*machinePos[j];
 
 		}
 
-		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
-		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*d6;
+		//now we offset the X and Z based on the angle of the nozzle. It is also noted that the a5 and d6 offsets are subtracted out with the cos-1.
+		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
 
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
+
+//
 	}
+
+
 
 
 	for (size_t motor = 0; motor < numTotalAxes; ++motor) {
@@ -404,6 +421,7 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 				lastAxis[motor] + 1);
 		size_t axis = firstAxis[motor];
 		if (axis < axisLimit) {
+			//we multiply the new rotated machine pos to the inverse matrix to get the differential.
 			float movement = inverseMatrix(axis, motor) * rotatedMachinePos[axis];
 			++axis;
 			while (axis < axisLimit) {
@@ -421,20 +439,55 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 		const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes,
 		float machinePos[]) const noexcept {
+	float rotatedPosition[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+
 	// If there are more motors than visible axes (e.g. CoreXYU which has a V motor), we assume that we can ignore the trailing ones when calculating the machine position
-	for (size_t axis = 0; axis < numVisibleAxes; ++axis) {
-		float position = 0.0;
-		const size_t motorLimit = min<size_t>(numVisibleAxes,
+	for (size_t axis = 0; axis < numTotalAxes; ++axis) {
+		const size_t motorLimit = min<size_t>(numTotalAxes,
 				lastMotor[axis] + 1);
 		for (size_t motor = firstMotor[axis]; motor < motorLimit; ++motor) {
+			//we know that this only gets us the value before the appropriate rotations are applied
 			const float factor = forwardMatrix(motor, axis);
 			if (factor != 0.0) {
-				position += factor * (float) motorPos[motor]
-													  / stepsPerMm[motor];
+				rotatedPosition[axis] += factor * (float) motorPos[motor]
+																   / stepsPerMm[motor];
 			}
 		}
-		machinePos[axis] = position;
 	}
+	//we now have our rotated position, but we cantget ahead of ourelves and set the machine pos. We have to undo the rotations. :(
+	//first thing is to figure out what the rotations actually are. The rotations "rotated" doesnt mean anything...
+	//get the factors of the current B and C axes. T5 is the B, T1 is the C
+	float cosT5 = cos(M_PI/180.0*rotatedPosition[3]);
+	float sinT5 = sin(M_PI/180.0*rotatedPosition[3]);
+	float cosT1 = cos(M_PI/180.0*rotatedPosition[4]);
+	float sinT1 = sin(M_PI/180.0*rotatedPosition[4]);
+
+	//since linear algebra is based and rotation matrices make me happy, we can simply take the transpose rather than a inverse.
+	//this is great since our matrices are not square lol
+	//iterate over the positions to calculate real values
+	for(size_t i = 0; i < numTotalAxes; ++i){
+
+		//now we offset the X and Z based on the angle of the nozzle. It is also noted that the a5 and d6 offsets are subtracted out with the cos-1.
+		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
+		//note the negative sign. This does not need an inverse since this is calculated off of rotations and simply applies a cartesian offset
+		machinePos[i] = -getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
+		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
+		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
+
+
+		for(size_t j = 0; j < numTotalAxes; ++j){
+
+			//notice how j and i are flipped here. This is the same as the transpose
+			machinePos[i] += getRotationMatrixValue(rotationMatrix1(j,i), cosT1, sinT1)*rotatedPosition[j];
+
+		}
+
+
+
+	}
+
+	//ok i have no idea if this will actually work.
+
 }
 
 // Limit the speed and acceleration of a move to values that the mechanics can handle

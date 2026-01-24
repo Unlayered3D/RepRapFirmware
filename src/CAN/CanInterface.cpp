@@ -315,7 +315,7 @@ void CanInterface::Init() noexcept
 
 	// Initialise the CAN hardware
 	CanTiming timing;
-	timing.SetDefaults(1000000);
+	timing.SetDefaults_1Mb();//(1000000); something bad in settings
 	can0dev = CanDevice::Init(0, CanDeviceNumber, Can0Config, can0Memory, timing, nullptr);
 	InitReceiveFilters();
 	can0dev->Enable();

@@ -56,7 +56,7 @@ private:
 	FixedMatrix<float, MaxAxes, MaxAxes> inverseMatrix;	// maps coordinates to motor positions
 
 	FixedMatrix<uint8_t, MaxAxes, MaxAxes> rotationMatrix1;
-	FixedMatrix<uint8_t, MaxAxes, 2> rotationMatrix2;
+	FixedMatrix<uint8_t, MaxAxes, MaxAxes> rotationMatrix2;
 
 
 	// Derived parameters
@@ -68,7 +68,7 @@ private:
 	uint8_t firstAxis[MaxAxes], lastAxis[MaxAxes];// first and last axis that each motor controls
 
 	bool modified;							// true if matrix has been altered
-	float a5, d6;
+	float a5, d6, s6;
 };
 
 #endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */
