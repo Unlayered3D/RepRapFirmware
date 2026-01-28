@@ -16,6 +16,11 @@
 // Object model table and functions
 // Note: if using GCC version 7.3.1 20180622 and lambda functions are used in this table, you must compile this file with option -std=gnu++17.
 // Otherwise the table will be allocated in RAM instead of flash, which wastes too much RAM.
+// DH PARAMETERS
+// d: [0 d2 d3 d4 0 d6];
+// theta: [t1 0 3*pi/2 (pi/2 + o3) t5 0];
+// a: [0 0 0 0 a5 0];
+// alp: [pi/2 pi/2 pi/2 3*pi/2 pi/2 0];
 
 // Macro to build a standard lambda function that includes the necessary type conversions
 #define OBJECT_MODEL_FUNC(...)					OBJECT_MODEL_FUNC_BODY(FiveAxisKinematics, __VA_ARGS__)
@@ -74,7 +79,7 @@ DEFINE_GET_OBJECT_MODEL_TABLE_WITH_PARENT(FiveAxisKinematics,
 
 // Recalculate internal variables following a configuration change
 void FiveAxisKinematics::Recalc() noexcept {
-	// Calculate the forward matrix by inverting the inverse matrix
+	// Calculate the forward differential matrix by inverting the inverse differential matrix
 	{
 		// Set up a double-width matrix with the inverse matrix in the left half and a unit diagonal matrix in the right half
 		FixedMatrix<float, MaxAxes, 2 * MaxAxes> tempMatrix;
@@ -89,6 +94,7 @@ void FiveAxisKinematics::Recalc() noexcept {
 		}
 
 		// Apply the Gauss-Jordan operation to transform the right half into the inverse of the inverse matrix
+		//TODO: PLZ USE A PIVOTING STRATEGY (Partial pivoting) to reduce float error
 		const bool ok = tempMatrix.GaussJordan(MaxAxes, 2 * MaxAxes);
 		if (ok) {
 			// Copy the right half to the forward matrix
@@ -169,7 +175,8 @@ inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 }
 const static uint8_t COS_ID = 2, SIN_ID = 3, N_COS_ID = 4, N_SIN_ID = 5;
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), s6(0.0f), modified(false) {
+										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), modified(false) {
+
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
 	inverseMatrix.Fill(0.0);
 	rotationMatrix1.Fill(0);
@@ -185,59 +192,96 @@ FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 		break;
 		//TODO decide which one of these to use
 	case KinematicsType::coreXBYC:
-		/*   1 2 3 4 5
-		 * x 1 1 0 0 0
-		 * y 0 0 0 1 1
-		 * z 0 0 1 0 0
-		 * b 1-1 0 0 0
-		 * c 0 0 0 1-1
-		 */
-		inverseMatrix(1, 1) = 0.0;
-		inverseMatrix(3, 3) = 0.0;
+		//DIFFERENTIAL MATRIX
+			//This matrix maps motor drivers to each axis
+			/*   0    1     2  3   4
+			 * x 1    0     0  1   0
+			 * y 0    1     0  0   1
+			 * z 0    0     1  0   0
+			 * b -1/3 0     0  1/3 0
+			 * c 0    11/18 0  0   -11/18
+			 */
 
-		inverseMatrix(0, 1) = 1.0;
-		inverseMatrix(1, 3) = 1.0;
-		inverseMatrix(1, 4) = 1.0;
+			inverseMatrix(0, 3) = 1.0;
+			inverseMatrix(1, 4) = 1.0;
 
-		inverseMatrix(3, 0) = 1.0 / 3.0;
-		inverseMatrix(3, 1) = -1.0 / 3.0;
-		inverseMatrix(4, 3) = 22.0 / 36.0;
-		inverseMatrix(4, 4) = -22.0 / 36.0;
+			inverseMatrix(3, 0) = 1.0 / 3.0;
+			inverseMatrix(3, 3) = -1.0 / 3.0;
+			inverseMatrix(4, 1) = 22.0 / 36.0;
+			inverseMatrix(4, 4) = -22.0 / 36.0;
+
+			//
+			// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
+			// Its technically a householder reflection
+			//
+
+			/*
+			 * 	x  y  z  b  c
+			 *  c  s  0  0  0
+			 *  s -c  0  0  0
+			 *  0  0  1  0  0
+			 *  0  0  0  1  0
+			 *  0  0  0  0  1
+			 */
+			rotationMatrix1(0,0) = COS_ID;
+			rotationMatrix1(0,1) = SIN_ID;
+			rotationMatrix1(1,0) = SIN_ID;
+			rotationMatrix1(1,1) = N_COS_ID;
+
+
+			//
+			// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
+			// Its technically a householder reflection
+			//
+
+			/* stedmans matrix also now applies a cross axis skew to Y based on new constant
+			 *  a5 sd d6
+			 *  c   0   s
+			 *  0   0   0
+			 *  s   0  -c
+			 *  0   0   0
+			 *  0   0   0
+			 */
+			rotationMatrix2(0,0) = SIN_ID;
+			rotationMatrix2(0,2) = COS_ID;
+			//rotationMatrix2(1,1) = SIN_ID;
+			rotationMatrix2(2,0) = N_COS_ID;
+			rotationMatrix2(2,2) = SIN_ID;
 		break;
 		//for the new kinematics
 	case KinematicsType::coreXBYC2:
 	case KinematicsType::coreXBYC3:
-		//going to also try
-		/*   1 2 3 4 5
-		 * x 1 0 0 1 0
-		 * y 0 1 0 0 1
-		 * z 0 0 1 0 0
-		 * b 1 0 0-1 0
-		 * c 0 1 0 0-1
+		//DIFFERENTIAL MATRIX
+		//This matrix maps motor drivers to each axis
+		/*   0    1     2  3   4
+		 * x 1    0     0 -1   0
+		 * y 0   -1     0  0   1
+		 * z 0    0     1  0   0
+		 * b -1/3 0     0  1/3 0
+		 * c 0   -11/18 0  0   -11/18
 		 */
 
-		inverseMatrix(0, 3) = 1.0;
+		inverseMatrix(0, 3) = -1.0;
+		inverseMatrix(1, 1) = -1.0;
 		inverseMatrix(1, 4) = 1.0;
 
-		inverseMatrix(3, 0) = 1.0 / 3.0;
+		inverseMatrix(3, 0) = -1.0 / 3.0;
 		inverseMatrix(3, 3) = -1.0 / 3.0;
-		inverseMatrix(4, 1) = 22.0 / 36.0;
+		inverseMatrix(4, 1) = -22.0 / 36.0;
 		inverseMatrix(4, 4) = -22.0 / 36.0;
 
-		/* yims matrix
-		 *  0 0 1 0 0
-		 * -s c 0 0 0
-		 * -c-s 0 0 0
-		 *  0 0 0 1 0
-		 *  0 0 0 0 1
-		 */
+		//
+		// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
+		// Its technically a householder reflection
+		//
 
-		/* stedmans matrix IN USE
-		 *  c-s 0 0 0
-		 *  s c 0 0 0
-		 *  0 0 1 0 0
-		 *  0 0 0 1 0
-		 *  0 0 0 0 1
+		/*
+		 * 	x  y  z  b  c
+		 *  c  s  0  0  0
+		 *  s  c  0  0  0
+		 *  0  0  1  0  0
+		 *  0  0  0  1  0
+		 *  0  0  0  0  1
 		 */
 		rotationMatrix1(0,0) = COS_ID;
 		rotationMatrix1(0,1) = SIN_ID;
@@ -245,26 +289,24 @@ FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 		rotationMatrix1(1,1) = COS_ID;
 
 
-		/* yims matrix IN USE
-		 * s c
-		 *  0 0
-		 * -c s
-		 *  0 0
-		 *  0 0
-		 */
+		//
+		// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
+		//
+		//
 
 		/* stedmans matrix also now applies a cross axis skew to Y based on new constant
-		 *  c 0-s
-		 *  0 s 0
-		 *  s 0 c
-		 *  0 0 0
-		 *  0 0 0
+		 *   a5 sd d6
+		 * x -s   0   c
+		 * y  0   0   0
+		 * z -c   0  -s
+		 * b  0   0   0
+		 * c  0   0   0
 		 */
-		rotationMatrix2(0,0) = SIN_ID;
-		rotationMatrix2(0,1) = COS_ID;
-		rotationMatrix2(1,1) = SIN_ID;
+		rotationMatrix2(0,0) = N_SIN_ID;
+		rotationMatrix2(0,2) = COS_ID;
+		//rotationMatrix2(1,1) = SIN_ID;
 		rotationMatrix2(2,0) = N_COS_ID;
-		rotationMatrix2(2,2) = SIN_ID;
+		rotationMatrix2(2,2) = N_SIN_ID;
 
 		break;
 	}
@@ -281,13 +323,13 @@ const char* _ecv_array FiveAxisKinematics::GetName(
 		return (forStatusReport) ? "cartesian" : "Cartesian";
 
 	case KinematicsType::coreXBYC:
-		return (forStatusReport) ? "coreXY" : "CoreXY";
+		return (forStatusReport) ? "coreXBYC" : "CoreXBYC";
 
 	case KinematicsType::coreXBYC2:
-		return (forStatusReport) ? "coreXY2" : "CoreXY2";
+		return (forStatusReport) ? "coreXBYC2" : "CoreXBYC2";
 
 	case KinematicsType::coreXBYC3:
-		return (forStatusReport) ? "coreXY3" : "CoreXY3";
+		return (forStatusReport) ? "coreXBYC3" : "CoreXBYC3";
 	default:
 		return "unknown";
 	}
@@ -330,8 +372,8 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	const bool seenSeg = TryConfigureSegmentation(gb);// configure optional segmentation
 	gb.TryGetFValue('A', a5, seen);
 	gb.TryGetFValue('D', d6, seen);
-	gb.TryGetFValue('S', s6, seen);
-	reply.printf("A is now %.2f, D is now %.2f, S is now %.2f", (double)a5, (double)d6, (double)s6);
+	//gb.TryGetFValue('S', s6, seen);
+	reply.printf("A is now %.2f, D is now %.2f", (double)a5, (double)d6);
 
 	if (seen) {
 		Recalc();
@@ -372,7 +414,9 @@ float FiveAxisKinematics::getRotationMatrixValue(uint8_t num, float cosN, float 
 		return 0.0;
 	}
 }
-
+//-----------------------------------------------------------------------------------------
+//INVERSE KINEMATICS
+//-----------------------------------------------------------------------------------------
 // Convert Cartesian coordinates to motor coordinates returning true if successful.
 // This is called frequently, so try to keep it efficient.
 // If a motor has no visible axes that affect it, leave the old motor coordinate unchanged.
@@ -407,7 +451,7 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
 
 		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
-		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
+		//rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
 		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
 
 //
@@ -434,7 +478,9 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 	return rslt;
 }
 
-
+//-----------------------------------------------------------------------------------------
+//FORWARDS KINEMATICS
+//-----------------------------------------------------------------------------------------
 // Convert motor coordinates to machine coordinates. Used after homing and after individual motor moves.
 void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 		const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes,
@@ -454,7 +500,8 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 			}
 		}
 	}
-	//we now have our rotated position, but we cantget ahead of ourelves and set the machine pos. We have to undo the rotations. :(
+
+	//we now have our rotated position, but we cant get ahead of ourelves and set the machine pos. We have to undo the rotations. :(
 	//first thing is to figure out what the rotations actually are. The rotations "rotated" doesnt mean anything...
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
 	float cosT5 = cos(M_PI/180.0*rotatedPosition[3]);
@@ -462,8 +509,8 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 	float cosT1 = cos(M_PI/180.0*rotatedPosition[4]);
 	float sinT1 = sin(M_PI/180.0*rotatedPosition[4]);
 
-	//since linear algebra is based and rotation matrices make me happy, we can simply take the transpose rather than a inverse.
-	//this is great since our matrices are not square lol
+	//Rotation matricies are orthagonal. R^-1 = R^T
+	//this is great since our matrices are not square lol :skull:
 	//iterate over the positions to calculate real values
 	for(size_t i = 0; i < numTotalAxes; ++i){
 
@@ -471,7 +518,7 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
 		//note the negative sign. This does not need an inverse since this is calculated off of rotations and simply applies a cartesian offset
 		machinePos[i] = -getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
-		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
+		//machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
 		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
 
 

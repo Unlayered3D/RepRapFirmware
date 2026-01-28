@@ -68,7 +68,7 @@ private:
 	uint8_t firstAxis[MaxAxes], lastAxis[MaxAxes];// first and last axis that each motor controls
 
 	bool modified;							// true if matrix has been altered
-	float a5, d6, s6;
+	float a5, d6;
 };
 
 #endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */
