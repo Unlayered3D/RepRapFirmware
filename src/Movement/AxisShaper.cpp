@@ -253,6 +253,58 @@ GCodeResult AxisShaper::Configure(GCodeBuffer& gb, const StringRef& reply) THROW
 			}
 			numImpulses = 5;
 			break;
+		case InputShaperType::nzvum: //see https://asmedigitalcollection.asme.org/dynamicsystems/article/119/2/198/442325/Time-Optimal-Negative-Input-Shapers
+			{
+				const float zetaSquared = fsquare(zeta);
+				const float zetaCubed = zetaSquared * zeta;
+
+				coefficients[0] = 1;
+				coefficients[1] = -1;
+
+				delays[1] = lrintf(StepClockRate/frequency * (Mt2nzvum[0] + Mt2nzvum[1]*zeta + Mt2nzvum[2]*zetaSquared));
+				delays[2] = lrintf(StepClockRate/frequency * (Mt3nzvum[0] + Mt3nzvum[1]*zeta + Mt3nzvum[2]*zetaSquared + Mt3nzvum[3]*zetaCubed));
+			}
+			numImpulses = 3;
+			break;
+
+
+
+		case InputShaperType::nzvdum: //see https://asmedigitalcollection.asme.org/dynamicsystems/article/119/2/198/442325/Time-Optimal-Negative-Input-Shapers
+			{
+				const float zetaSquared = fsquare(zeta);
+				const float zetaCubed = zetaSquared * zeta;
+
+				coefficients[0] = 1;
+				coefficients[1] = -1;
+				coefficients[2] = 1;
+				coefficients[3] = -1;
+
+				delays[1] = lrintf(StepClockRate/frequency * (Mt2nzvdum[0] + Mt2nzvdum[1]*zeta + Mt2nzvdum[2]*zetaSquared + Mt2nzvdum[3]*zetaCubed));
+				delays[2] = lrintf(StepClockRate/frequency * (Mt3nzvdum[0] + Mt3nzvdum[1]*zeta + Mt3nzvdum[2]*zetaSquared + Mt3nzvdum[3]*zetaCubed));
+				delays[3] = lrintf(StepClockRate/frequency * (Mt4nzvdum[0] + Mt4nzvdum[1]*zeta + Mt4nzvdum[2]*zetaSquared + Mt4nzvdum[3]*zetaCubed));
+				delays[4] = lrintf(StepClockRate/frequency * (Mt5nzvdum[0] + Mt5nzvdum[1]*zeta + Mt5nzvdum[2]*zetaSquared + Mt5nzvdum[3]*zetaCubed));
+			}
+			numImpulses = 5;
+			break;
+
+
+		case InputShaperType::neium: //see https://asmedigitalcollection.asme.org/dynamicsystems/article/119/2/198/442325/Time-Optimal-Negative-Input-Shapers
+			{
+				const float zetaSquared = fsquare(zeta);
+				const float zetaCubed = zetaSquared * zeta;
+
+				coefficients[0] = 1;
+				coefficients[1] = -1;
+				coefficients[2] = 1;
+				coefficients[3] = -1;
+
+				delays[1] = lrintf(StepClockRate/frequency * (Mt2neium[0] + Mt2neium[1]*zeta + Mt2neium[2]*zetaSquared +  Mt2neium[3]*zetaCubed));
+				delays[2] = lrintf(StepClockRate/frequency * (Mt3neium[0] + Mt3neium[1]*zeta + Mt3neium[2]*zetaSquared +  Mt3neium[3]*zetaCubed));
+				delays[3] = lrintf(StepClockRate/frequency * (Mt4neium[0] + Mt4neium[1]*zeta + Mt4neium[2]*zetaSquared +  Mt4neium[3]*zetaCubed));
+				delays[4] = lrintf(StepClockRate/frequency * (Mt5neium[0] + Mt5neium[1]*zeta + Mt5neium[2]*zetaSquared +  Mt5neium[3]*zetaCubed));
+			}
+			numImpulses = 5;
+			break;
 		}
 
 		// The sum of the coefficients must total 1, use this to fill in the last coefficient

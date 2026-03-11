@@ -11,6 +11,7 @@
 #include <RepRapFirmware.h>
 #include <General/NamedEnum.h>
 #include <ObjectModel/ObjectModel.h>
+#include <array>
 
 // These names must be in alphabetical order and lowercase
 NamedEnum(InputShaperType, uint8_t,
@@ -22,6 +23,9 @@ NamedEnum(InputShaperType, uint8_t,
 	zvd,
 	zvdd,
 	zvddd,
+	nzvum,
+	nzvdum,
+	neium
 );
 
 namespace InputShapingDebugFlags
@@ -77,6 +81,20 @@ private:
 	unsigned int numImpulses;							// the number of impulses
 	motioncalc_t coefficients[MaxImpulses];				// the coefficients of all the impulses, must add up to 1.0
 	uint32_t delays[MaxImpulses];						// the start delay in step clocks of each impulse, first one is normally zero
+
+	//curve fits,no analytic solution
+	static constexpr float Mt2nzvum[4] = {0.16724f, 0.27242f, 0.20345f, 0.0f};
+	static constexpr float Mt3nzvum[4] = {0.33323f, 0.00533f, 0.17914f, 0.20125f};
+
+	static constexpr float Mt2nzvdum[4] = {0.08945f, 0.28411f, 0.23013f, 0.16401f};
+	static constexpr float Mt3nzvdum[4] = {0.36613f, -0.08833f, 0.24048f, 0.17001f};
+	static constexpr float Mt4nzvdum[4] = {0.64277f, 0.29103f, 0.23262f, 0.43784f};
+	static constexpr float Mt5nzvdum[4] = {0.73228f, 0.00992f, 0.49385f, 0.38633f};
+
+	static constexpr float Mt2neium[4] = {0.09374f, 0.31903f, 0.13582f, 0.65274f};
+	static constexpr float Mt3neium[4] = {0.36798f, -0.05894f, 0.13641f, 0.63266f};
+	static constexpr float Mt4neium[4] = {0.64256f, 0.28595f, 0.26334f, 0.24999f};
+	static constexpr float Mt5neium[4] = {0.73664f, 0.00162f, 0.52749f, 0.19208f};
 };
 
 #endif /* SRC_MOVEMENT_AXISSHAPER_H_ */
