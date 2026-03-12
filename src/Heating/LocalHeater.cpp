@@ -295,7 +295,10 @@ void LocalHeater::Spin() noexcept
 				lastExtrusionTemperatureBoost = extrusionTemperatureBoost;
 			}
 
-			const float error = targetTemperature - temperature;
+			const float error = gotDerivative ?
+					targetTemperature - (temperature + GetModel().GetDeadTime() * derivative) :
+					targetTemperature - temperature;
+
 
 			// Do the heating checks
 			switch (mode)
@@ -403,7 +406,7 @@ void LocalHeater::Spin() noexcept
 					const bool inLoadMode = (mode == HeaterMode::stable) || fabsf(error) < 3.0;		// use standard PID when maintaining temperature
 					const PidParameters& params = GetModel().GetPidParameters(inLoadMode);
 
-					// If the P and D terms together demand that the heater is full on or full off, disregard the I term
+					// If the P and D terms together demand that the heater is full on or full off, AND the integral wants to saturate the heater more,, disregard the I term
 					//clamps the accumulated value only if integral tries to saturate it further
 					const float errorMinusDterm = error - (params.tD * derivative);
 					const float expectedPwm = GetModel().EstimateRequiredPwm(temperature - NormalAmbientTemperature, lastFanPwm);
@@ -415,7 +418,7 @@ void LocalHeater::Spin() noexcept
 					}
 
 					//Check if we are saturated AND that integration will make it worse
-					if (pPlusD + expectedPwm > GetModel().GetMaxPwm() && error > 0.0)
+					if (pPlusD + iAccumulator > GetModel().GetMaxPwm() && error > 0.0)
 					{
 						lastPwm = GetModel().GetMaxPwm();
 						// If we are heating up, preset the I term to the expected PWM at this temperature, ready for the switch over to PID
@@ -426,7 +429,7 @@ void LocalHeater::Spin() noexcept
 						}
 					}
 					//Negative saturation check
-					else if (pPlusD + expectedPwm < 0.0 && error < 0.0)
+					else if (pPlusD + iAccumulator < 0.0 && error < 0.0)
 					{
 						lastPwm = 0.0;
 					}
@@ -435,7 +438,7 @@ void LocalHeater::Spin() noexcept
 						TaskCriticalSectionLocker lock;					// avoid a race with tasks that implement feedforward
 						iAccumulator = constrain<float>
 										(iAccumulator + (error * params.kP * params.recipTi * (HeatSampleIntervalMillis * MillisToSeconds)),
-											0.0, GetModel().GetMaxPwm());
+											-GetModel().GetMaxPwm(), GetModel().GetMaxPwm());
 						lastPwm = constrain<float>(pPlusD + iAccumulator, 0.0, GetModel().GetMaxPwm());
 					}
 			    	//replyprintf("e=%f, P=%f, I=%f, d=%f, r=%f\n", error, params.kP*error, iAccumulator, (params.tD * derivative), lastPwm);
