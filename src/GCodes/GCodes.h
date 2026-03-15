@@ -798,6 +798,8 @@ private:
 	static constexpr const float MinServoPulseWidth = 544.0, MaxServoPulseWidth = 2400.0;
 
 	static constexpr int8_t ObjectModelAuxStatusReportType = 100;		// A non-negative value distinct from any M408 report type
+
+	bool isRetrying;
 };
 
 // Called by the Move task to report that a move could not be queued

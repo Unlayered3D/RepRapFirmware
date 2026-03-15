@@ -834,6 +834,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 	case GCodeState::gridProbing1:		// ready to move to next grid probe point
 		{
 			// Move to the current probe point
+			isRetrying = false;
 			Move& move = reprap.GetMove();
 			const HeightMap& hm = move.AccessHeightMap();
 			if (hm.CanProbePoint(gridAxis0Index, gridAxis1Index))
@@ -919,7 +920,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 	case GCodeState::gridProbing3:		// ready to probe the current grid probe point
 		{
 			const auto zp = platform.GetZProbeOrDefault(currentZProbeNumber);
-			if (millis() - lastProbedTime >= (uint32_t)(zp->GetRecoveryTime() * SecondsToMillis))
+			if (millis() - lastProbedTime >= (uint32_t)((1 + 2*isRetrying)*(zp->GetRecoveryTime() * SecondsToMillis)))
 			{
 				// Probe the bed at the current XY coordinates
 				// Check for probe already triggered at start
@@ -938,11 +939,18 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 #endif
 					if (zp->Stopped())
 					{
-						reprap.GetHeat().SuspendHeaters(false);
-						gb.LatestMachineState().SetError("Probe already triggered before probing move started");
-						gb.SetState(GCodeState::checkError);
-						RetractZProbe(gb);
-						break;
+						if(isRetrying) {
+							reprap.GetHeat().SuspendHeaters(false);
+							gb.LatestMachineState().SetError("Probe already triggered before probing move started");
+							gb.SetState(GCodeState::checkError);
+							RetractZProbe(gb);
+							break;
+						}
+						else {
+							isRetrying = true;
+							gb.SetState(GCodeState::gridProbing2a);
+						}
+
 					}
 					else
 					{
@@ -969,6 +977,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 		break;
 
 	case GCodeState::gridProbing4:	// ready to lift the probe after probing the current grid probe point
+		isRetrying = false;
 		if (LockCurrentMovementSystemAndWaitForStandstill(gb))
 		{
 			doingManualBedProbe = false;
