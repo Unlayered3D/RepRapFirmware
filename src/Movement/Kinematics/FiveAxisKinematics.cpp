@@ -372,8 +372,10 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	const bool seenSeg = TryConfigureSegmentation(gb);// configure optional segmentation
 	gb.TryGetFValue('A', a5, seen);
 	gb.TryGetFValue('D', d6, seen);
+	gb.TryGetFloatArray('X', 2, xJointLimits, seen);
+	gb.TryGetFloatArray('Z', 2, zJointLimits, seen);
 	//gb.TryGetFValue('S', s6, seen);
-	reply.printf("A is now %.2f, D is now %.2f", (double)a5, (double)d6);
+	reply.printf("A is now %.2f, D is now %.2f. Joint limits are X:%.2f, %.2f, Z:%.2f, %.2f", (double)a5, (double)d6, xJointLimits[0], xJointLimits[1], zJointLimits[0], zJointLimits[1]);
 
 	if (seen) {
 		Recalc();
@@ -456,8 +458,15 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 
 //
 	}
+	//Joint space
+
+	if(rotatedMachinePos[0] < xJointLimits[0] || rotatedMachinePos[0] > xJointLimits[1] ||
+			rotatedMachinePos[2] < zJointLimits[0] || rotatedMachinePos[2] > zJointLimits[1]) {
+		return MovementError::unreachable_position;
+	}
 
 
+	//end joint space
 
 
 	for (size_t motor = 0; motor < numTotalAxes; ++motor) {
