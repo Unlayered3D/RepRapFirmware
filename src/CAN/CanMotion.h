@@ -24,10 +24,9 @@ namespace CanMotion
 	void AddExtruderMovement(const PrepParams& params, DriverId canDriver, float extrusion, bool usePressureAdvance) noexcept;
 	uint32_t FinishMovement(const DDA& dda, uint32_t moveStartTime, bool simulating) noexcept;
 	bool CanPrepareMove() noexcept;
-	CanMessageBuffer *GetUrgentMessage() noexcept;
+	CanMessageBuffer *_ecv_null GetUrgentMessage() noexcept;
 
 	// The next 4 functions may be called from the step ISR, so they can't send CAN messages directly
-	void InsertHiccup(uint32_t numClocks) noexcept;
 	void StopDriverWhenProvisional(DriverId driver) noexcept
 		pre(driver.IsRemote());
 	bool StopDriverWhenExecuting(DriverId driver, int32_t netStepsTaken) noexcept

@@ -91,7 +91,7 @@ void DDARing::Init1(unsigned int numDdas) noexcept
 // This must be called from Move::Init, not from the Move constructor, because it indirectly refers to the GCodes module which must therefore be initialised first
 void DDARing::Init2() noexcept
 {
-	numLookaheadUnderruns = numPrepareUnderruns = numNoMoveUnderruns = numLookaheadErrors = 0;
+	numLookaheadUnderruns = numNoMoveUnderruns = numLookaheadErrors = 0;
 	waitingForRingToEmpty = false;
 	simulationTime = 0.0;
 }
@@ -156,9 +156,15 @@ GCodeResult DDARing::ConfigureMovementQueue(GCodeBuffer& gb, const StringRef& re
 
 bool DDARing::CanAddMove() const noexcept
 {
-	 if (   addPointer->GetState() == DDA::empty
-		 && addPointer->GetNext()->GetState() != DDA::provisional		// function Prepare needs to access the endpoints in the previous move, so don't change them
-		)
+	// We have two constraints here that may prevent us from using the last free element in the ring:
+	// 1. DDA::Prepare needs to access the previous DDA in the ring to find the endpoints of the previous move.
+	//    So we must not allocate an empty slot if the next one has state 'provisional'.
+	// 2. If all DDAs in the ring have state 'committed' then function ManageIOBitsAndFeedforward may loop indefinitely.
+	//    So we must not allocate an empty slot if the next one has state 'committed'.
+	// The simplest solution is not to allow the last free slot to be allocated.
+	if (   addPointer->GetState() == DDA::empty
+		&& addPointer->GetNext()->GetState() == DDA::empty
+	   )
 	 {
 			// In order to react faster to speed and extrusion rate changes, only add more moves if the total duration of
 			// all un-frozen moves is less than 2 seconds, or the total duration of all but the first un-frozen move is less than 0.5 seconds.
@@ -264,17 +270,25 @@ uint32_t DDARing::Spin(uint32_t prepareAdvanceTime, SimulationMode simulationMod
 
 		// Count how many prepared or executing moves we have and how long they will take
 		uint32_t preparedTime = 0;
-		unsigned int preparedCount = 0;
 		while (cdda->IsCommitted())
 		{
 			preparedTime += cdda->GetTimeLeft();
-			++preparedCount;
 			cdda = cdda->GetNext();
 		}
 
-		const uint32_t ret = (cdda->GetState() == DDA::provisional)
-						? PrepareMoves(cdda, prepareAdvanceTime, preparedTime, preparedCount, simulationMode)
-							: MoveTiming::StandardMoveWakeupInterval;
+		uint32_t ret;
+		if (cdda->GetState() == DDA::provisional)
+		{
+			ret = PrepareMoves(cdda, prepareAdvanceTime, preparedTime, simulationMode);
+		}
+		else
+		{
+			if (!waitingForRingToEmpty && IsTimeToPrepareMove(prepareAdvanceTime, preparedTime))
+			{
+				++numNoMoveUnderruns;
+			}
+			ret = MoveTiming::StandardMoveWakeupInterval;
+		}
 
 		if (simulationMode != SimulationMode::off)
 		{
@@ -306,7 +320,7 @@ uint32_t DDARing::Spin(uint32_t prepareAdvanceTime, SimulationMode simulationMod
 		|| cdda->IsIsolatedMove()									// ...or checking endstops or another isolated move, so we can't schedule the following move
 	   )
 	{
-		const uint32_t ret = PrepareMoves(cdda, prepareAdvanceTime, 0, 0, simulationMode);
+		const uint32_t ret = PrepareMoves(cdda, prepareAdvanceTime, 0, simulationMode);
 		if (cdda->IsCommitted())
 		{
 			if (simulationMode != SimulationMode::off)
@@ -339,15 +353,20 @@ uint32_t DDARing::Spin(uint32_t prepareAdvanceTime, SimulationMode simulationMod
 				: MoveTiming::StandardMoveWakeupInterval;			// the queue is empty, nothing to do until new moves arrive
 }
 
+// Return true if it is time to prepare some moves
+inline bool DDARing::IsTimeToPrepareMove(uint32_t prepareAdvanceTime, uint32_t moveTimeLeft) const noexcept
+{
+	return moveTimeLeft < prepareAdvanceTime;						// prepare moves one tenth of a second ahead of when they will be needed
+}
+
 // Prepare some moves. moveTimeLeft is the total length remaining of moves that are already executing or prepared.
 // Return the maximum time in milliseconds that should elapse before we prepare further unprepared moves that are already in the ring, or MoveTiming::StandardMoveWakeupInterval if there are no unprepared moves left.
-uint32_t DDARing::PrepareMoves(DDA *firstUnpreparedMove, uint32_t prepareAdvanceTime, uint32_t moveTimeLeft, unsigned int alreadyPrepared, SimulationMode simulationMode) noexcept
+uint32_t DDARing::PrepareMoves(DDA *firstUnpreparedMove, uint32_t prepareAdvanceTime, uint32_t moveTimeLeft, SimulationMode simulationMode) noexcept
 {
 	// If the already-prepared moves will execute in less than the minimum time, prepare another move.
 	// Try to avoid preparing deceleration-only moves too early
 	while (	  firstUnpreparedMove->GetState() == DDA::provisional
-		   && moveTimeLeft < prepareAdvanceTime	// prepare moves one tenth of a second ahead of when they will be needed
-		   && alreadyPrepared * 2 < numDdasInRing					// but don't prepare more than half the ring, to handle accelerate/decelerate moves in small segments
+		   && IsTimeToPrepareMove(prepareAdvanceTime, moveTimeLeft)
 #if SUPPORT_CAN_EXPANSION
 		   && CanMotion::CanPrepareMove()
 #endif
@@ -355,7 +374,6 @@ uint32_t DDARing::PrepareMoves(DDA *firstUnpreparedMove, uint32_t prepareAdvance
 	{
 		firstUnpreparedMove->Prepare(*this, prepareAdvanceTime, simulationMode);
 		moveTimeLeft += firstUnpreparedMove->GetTimeLeft();
-		++alreadyPrepared;
 		firstUnpreparedMove = firstUnpreparedMove->GetNext();
 	}
 
@@ -568,8 +586,7 @@ bool DDARing::PauseMoves(MovementState& ms) noexcept
 	rp.proportionDone = dda->GetProportionDone();			// get the proportion of the current multi-segment move that has been completed
 	rp.initialUserC0 = dda->GetInitialUserC0();
 	rp.initialUserC1 = dda->GetInitialUserC1();
-	const float rawFeedRate = (dda->UsingStandardFeedrate()) ? dda->GetRequestedSpeedMmPerClock() : ms.feedRate;	// this is the requested feed rate after applying the speed factor
-	rp.feedRate = rawFeedRate/ms.speedFactor;				// correct it for the speed factor, assuming that the speed factor hasn't changed
+	rp.originalFeedRate = dda->GetOriginalFeedRate();
 	rp.virtualExtruderPosition = dda->GetVirtualExtruderPosition();
 	rp.filePos = dda->GetFilePosition();
 
@@ -637,7 +654,7 @@ bool DDARing::LowPowerOrStallPause(MovementState& ms) noexcept
 	// We are going to skip some moves, or part of a move.
 	// Store the parameters of the first move we are going to execute when we resume
 	RestorePoint& rp = ms.GetPauseRestorePoint();
-	rp.feedRate = dda->GetRequestedSpeedMmPerClock();
+	rp.originalFeedRate = dda->GetOriginalFeedRate();
 	rp.virtualExtruderPosition = dda->GetVirtualExtruderPosition();
 	rp.filePos = dda->GetFilePosition();
 	rp.proportionDone = dda->GetProportionDone();		// store how much of the complete multi-segment move's extrusion has been done
@@ -671,10 +688,10 @@ bool DDARing::LowPowerOrStallPause(MovementState& ms) noexcept
 
 void DDARing::Diagnostics(const StringRef& reply, unsigned int ringNumber) noexcept
 {
-	reply.lcatf("=== DDARing %u ===\nScheduled moves %" PRIu32 ", completed %" PRIu32 ", LaErrors %u, Underruns [%u, %u, %u]\n",
-				ringNumber, scheduledMoves, completedMoves, numLookaheadErrors, numLookaheadUnderruns, numPrepareUnderruns, numNoMoveUnderruns
+	reply.lcatf("=== DDARing %u ===\nScheduled moves %" PRIu32 ", completed %" PRIu32 ", LaErrors %u, Underruns [%u, %u]\n",
+				ringNumber, scheduledMoves, completedMoves, numLookaheadErrors, numLookaheadUnderruns, numNoMoveUnderruns
 			   );
-	numLookaheadUnderruns = numPrepareUnderruns = numNoMoveUnderruns = numLookaheadErrors = 0;
+	numLookaheadUnderruns = numNoMoveUnderruns = numLookaheadErrors = 0;
 	reprap.GetGCodes().GetMovementState(ringNumber).Diagnostics(reply);
 }
 
@@ -711,10 +728,10 @@ uint32_t DDARing::ManageLaserPower(Platform& platform) noexcept
 // Manage the IOBITS (G1 P parameter) and extruder heater feedforward. Called by the Laser task. Return the number of ticks until we should be called again, up to portMAX_DELAY.
 uint32_t DDARing::ManageIOBitsAndFeedForward(Platform& platform) noexcept
 {
-	const unsigned int FeedForwardBit = 0x01;
-	const unsigned int OutputOnExtrudeBit = 0x02;
+	constexpr unsigned int FeedForwardBit = 0x01;
+	constexpr unsigned int OutputOnExtrudeBit = 0x02;
 #if SUPPORT_IOBITS
-	const unsigned int IoBitsBit = 0x04;
+	constexpr unsigned int IoBitsBit = 0x04;
 #endif
 
 	unsigned int bitsLeftToDo = FeedForwardBit;
@@ -802,7 +819,7 @@ uint32_t DDARing::ManageIOBitsAndFeedForward(Platform& platform) noexcept
 					if (!cdda->HaveDoneOutputOnExtrude())
 					{
 						cdda->SetDoneOutputOnExtrude();
-						if (cdda->GetAverageExtrusionSpeed() != 0.0)
+						if (cdda->HasForwardExtrusion())
 						{
 							platform.ExtrudeOn();
 						}

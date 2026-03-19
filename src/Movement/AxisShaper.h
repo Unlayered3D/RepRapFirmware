@@ -51,6 +51,8 @@ public:
 	size_t GetNumImpulses() const noexcept { return numImpulses; }
 	motioncalc_t GetImpulseSize(size_t n) const noexcept { return coefficients[n]; }
 	uint32_t GetImpulseDelay(size_t n) const noexcept { return delays[n]; }
+	uint32_t GetPrepareAdvanceTime() const noexcept { return prepareAdvanceTime; }
+	uint32_t GetShapingTime() const noexcept { return shapingTime; }
 
 #if SUPPORT_REMOTE_COMMANDS
 	// Handle a request from the master board to set input shaping parameters
@@ -95,6 +97,8 @@ private:
 	static constexpr float Mt3neium[4] = {0.36798f, -0.05894f, 0.13641f, 0.63266f};
 	static constexpr float Mt4neium[4] = {0.64256f, 0.28595f, 0.26334f, 0.24999f};
 	static constexpr float Mt5neium[4] = {0.73664f, 0.00162f, 0.52749f, 0.19208f};
+	uint32_t shapingTime;								// how long after its nominal end time the move is still in flight
+	uint32_t prepareAdvanceTime;						// how far in advance we need to prepare moves, which depends on input shaping
 };
 
 #endif /* SRC_MOVEMENT_AXISSHAPER_H_ */

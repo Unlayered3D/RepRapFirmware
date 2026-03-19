@@ -49,7 +49,7 @@ constexpr float DefaultZInstantDv = 10.0;
 constexpr float DefaultEInstantDv = 5.0;
 
 constexpr float DefaultMinFeedrate = 0.5;				// the default minimum movement speed in mm/sec (extruding moves will go slower than this if the extrusion rate demands it)
-constexpr float AbsoluteMinFeedrate = 0.01;				// the absolute minimum movement speed in mm/sec
+constexpr float AbsoluteMinFeedrate = 0.001;			// the absolute minimum movement speed in mm/sec (reduced, see issue #1172)
 constexpr float ImpossiblyHighFeedRate = 10000.0;		// a feedrate higher than any that are likely to be achieved
 
 constexpr float MinimumJerk = 0.1;						// the minimum jerk in mm/sec
@@ -66,6 +66,12 @@ constexpr unsigned int MaxTools = 50;					// this limit is to stop the serialise
 constexpr unsigned int MinVisibleAxes = 2;				// the minimum number of axes that we allow to be visible
 
 constexpr unsigned int DefaultBacklashCorrectionDistanceFactor = 10;	// backlash correction is spread over (backlash amount * this) mm
+
+constexpr float MaxCncRadiusErrorMm = 0.002;			// max difference between G2/G3 start and end distances from arc centre when in CNC mm mode, see NIST 3.5.3.2
+constexpr float MaxCncRadiusErrorInches = 0.0002;		// max difference between G2/G3 start and end distances from arc centre when in CNC inches mode, see NIST 3.5.3.2
+constexpr float MaxNonCncRadiusError = 0.05;			// max difference between G2/G3 start and end distances from arc centre when not in CNC mode (mm)
+
+constexpr float MaxRelativeBabystepping = 10.0;			// increased from 1.0mm because we have an OEM using 40mm layer height
 
 // Timeouts
 constexpr uint32_t LogFlushInterval = 15000;			// Milliseconds
@@ -279,7 +285,7 @@ constexpr size_t MaxThumbnails = 4;						// Maximum number of thumbnail images r
 
 // Filesystem and upload defaults
 #define FS_PREFIX				"0:"
-#define WEB_DIR					"0:/www/"				// Place to find web files on the SD card
+#define DEFAULT_WEB_DIR			"0:/www/"				// Place to find web files on the SD card
 #define GCODE_DIR				"0:/gcodes/"			// Ditto - G-Codes
 #define DEFAULT_SYS_DIR			"0:/sys/"				// Ditto - System files (can be changed using M505)
 #define MACRO_DIR				"0:/macros/"			// Ditto - Macro files
@@ -293,7 +299,7 @@ constexpr size_t MaxThumbnails = 4;						// Maximum number of thumbnail images r
 // As at 2020-05-02 the longest filename requested by DWC is "/fonts/materialdesignicons-webfont.3e2c1c79.eot" which is 48 characters long
 // It must be small enough that a filename within this length doesn't cause an overflow in MassStorage::CombineName. This is checked by the static_assert below.
 constexpr size_t MaxExpectedWebDirFilenameLength = MaxFilenameLength - 20;
-static_assert(MaxExpectedWebDirFilenameLength + strlen(WEB_DIR) + strlen(".gz") <= MaxFilenameLength);
+static_assert(MaxExpectedWebDirFilenameLength + strlen(DEFAULT_WEB_DIR) + strlen(".gz") <= MaxFilenameLength);
 
 #define UPLOAD_EXTENSION ".part"					// Extension to a filename for a file being uploaded
 

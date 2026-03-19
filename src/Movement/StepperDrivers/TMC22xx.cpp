@@ -1234,6 +1234,7 @@ void TmcDriverState::SetStallDetectThreshold(int sgThreshold) noexcept
 
 void TmcDriverState::SetStallMinimumStepsPerSecond(unsigned int stepsPerSecond) noexcept
 {
+	if (stepsPerSecond == 0) { stepsPerSecond = 1; }					// avoid divide-by-zero errors
 	UpdateRegister(WriteTcoolthrs, (NominalTmcClockSpeed + (128 * stepsPerSecond))/(256 * stepsPerSecond));
 }
 
@@ -1596,6 +1597,10 @@ StandardDriverStatus TmcDriverState::GetStatus(bool accumulated, bool clearAccum
 	{
 		rslt.all = 0;
 		rslt.notPresent = true;
+#ifdef DUET3MINI
+		// The DIAG inputs can be fed from DRIVER_ERROR inputs on the external drivers adapter
+		rslt.externalDriverError = digitalRead(DriverDiagPins[driverNumber]);
+#endif
 	}
 	return rslt;
 }
@@ -2299,7 +2304,7 @@ void SmartDrivers::Init() noexcept
 #endif
 		driverStates[drive].Init(drive
 #if TMC22xx_HAS_ENABLE_PINS
-								, ENABLE_PINS[drive]
+								, DriverEnablePins[drive]
 #endif
 #if HAS_STALL_DETECT
 								, DriverDiagPins[drive]
@@ -2709,7 +2714,7 @@ extern "C" void EVSYS_3_Handler() noexcept __attribute__ ((alias("StallEventInte
 // Check whether stall detection is viable. If yes, return nullptr. If no, return a message string in flash memory containing a single %u placeholder for the driver number.
 const char *_ecv_array _ecv_null SmartDrivers::CheckStallDetectionEnabled(size_t driver, float speed) noexcept
 {
-	return (driver < GetNumTmcDrivers())
+	return (driver < GetNumTmcDrivers() && driverStates[driver].DriverAssumedPresent())
 			? driverStates[driver].CheckStallDetectionEnabled(speed)
 				: "driver %u does not support stall detection";
 }
@@ -2720,7 +2725,7 @@ const char *_ecv_array _ecv_null SmartDrivers::CheckStallDetectionEnabled(size_t
 
 GCodeResult SmartDrivers::SetStallEndstopReporting(uint16_t driverNumber, float speed, const StringRef& reply) noexcept
 {
-	if (driverNumber < GetNumTmcDrivers())
+	if (driverNumber < GetNumTmcDrivers() && driverStates[driverNumber].DriverAssumedPresent())
 	{
 		const char *_ecv_array _ecv_null const msg = driverStates[driverNumber].CheckStallDetectionEnabled(speed);
 		if (msg == nullptr)

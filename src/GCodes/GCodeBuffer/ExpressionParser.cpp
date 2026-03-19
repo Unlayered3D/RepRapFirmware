@@ -121,7 +121,7 @@ void ExpressionParser::ApplyObjectModelArrayIndex(ExpressionValue& rslt, int ind
 	}
 	else if (evaluate)
 	{
-		throw GCodeException(gb, indexCol, "array index out of range");
+		throw GCodeException(gb, indexCol, ArrayIndexOutOfRangeText);
 	}
 	else
 	{
@@ -179,7 +179,8 @@ void ExpressionParser::ParseInternal(ExpressionValue& val, bool evaluate, uint8_
 			break;
 
 		default:
-			ThrowParseException("expected numeric value after '-'");
+			if (evaluate) { ThrowParseException("expected numeric value after '-'"); }
+			break;
 		}
 		break;
 
@@ -203,7 +204,8 @@ void ExpressionParser::ParseInternal(ExpressionValue& val, bool evaluate, uint8_
 			break;
 
 		default:
-			ThrowParseException("expected numeric or enumeration value after '+'");
+			if (evaluate) { ThrowParseException("expected numeric or enumeration value after '+'"); }
+			break;
 		}
 		break;
 
@@ -287,7 +289,7 @@ void ExpressionParser::ParseInternal(ExpressionValue& val, bool evaluate, uint8_
 				{
 					if (evaluate)
 					{
-						throw GCodeException(gb, indexCol, "array index out of range");
+						throw GCodeException(gb, indexCol, ArrayIndexOutOfRangeText);
 					}
 					else
 					{
@@ -302,7 +304,7 @@ void ExpressionParser::ParseInternal(ExpressionValue& val, bool evaluate, uint8_
 				const size_t len = strlen(val.sVal);
 				if (indexValue >= len)
 				{
-					throw GCodeException(gb, indexCol, "array index out of range");
+					throw GCodeException(gb, indexCol, ArrayIndexOutOfRangeText);
 				}
 				val.SetChar(val.sVal[indexValue]);
 			}
@@ -313,7 +315,7 @@ void ExpressionParser::ParseInternal(ExpressionValue& val, bool evaluate, uint8_
 				ReadLockedPointer<const char> p = val.shVal.Get();
 				if (p.IsNull() || indexValue >= strlen(p.Ptr()))
 				{
-					throw GCodeException(gb, indexCol, "array index out of range");
+					throw GCodeException(gb, indexCol, ArrayIndexOutOfRangeText);
 				}
 				val.SetChar(p.Ptr()[indexValue]);
 			}
@@ -2016,7 +2018,9 @@ void ExpressionParser::ParseIdentifierExpression(ExpressionValue& rslt, bool eva
 						break;
 
 					default:
-						ThrowParseException("first operand of function is not an array or string");
+						if (evaluate) { ThrowParseException("first operand of function is not an array or string"); }
+						rslt.SetNull(nullptr);
+						break;
 					}
 				}
 				break;
@@ -2097,7 +2101,9 @@ void ExpressionParser::ParseIdentifierExpression(ExpressionValue& rslt, bool eva
 						break;
 
 					default:
-						ThrowParseException("first operand of function is not an array or string");
+						if (evaluate) { ThrowParseException("first operand of function is not an array or string"); }
+						rslt.SetNull(nullptr);
+						break;
 					}
 				}
 				break;
@@ -2108,14 +2114,6 @@ void ExpressionParser::ParseIdentifierExpression(ExpressionValue& rslt, bool eva
 					GetNextOperand(nextOperand, evaluate);
 					switch (rslt.GetType())
 					{
-					case TypeCode::ObjectModelArray:
-						ThrowParseException("not implemented");
-						break;
-
-					case TypeCode::HeapArray:
-						ThrowParseException("not implemented");
-						break;
-
 					case TypeCode::CString:
 						SetFindResult(rslt, rslt.sVal, nextOperand);
 						break;
@@ -2127,8 +2125,13 @@ void ExpressionParser::ParseIdentifierExpression(ExpressionValue& rslt, bool eva
 						}
 						break;
 
+					// find() on arrays is not yet implemented but may be in future
+					case TypeCode::ObjectModelArray:
+					case TypeCode::HeapArray:
 					default:
-						ThrowParseException("first operand of function is not an array or string");
+						if (evaluate) { ThrowParseException("first operand of function is not a string"); }
+						rslt.SetNull(nullptr);
+						break;
 					}
 				}
 				break;
@@ -2246,7 +2249,7 @@ void ExpressionParser::GetVariableValue(ExpressionValue& rslt, const VariableSet
 							rslt.SetBool(false);
 							return;
 						}
-						ThrowParseException("Index out of range");
+						ThrowParseException(ArrayIndexOutOfRangeText);
 					}
 				}
 

@@ -74,7 +74,7 @@ public:
 	bool IsPhaseStepEnabled() const noexcept { return stepMode == StepMode::phase; }
 	// Get the current position relative to the start of this move, speed and acceleration. Units are microsteps and step clocks.
 	// Return true if this drive is moving. Segments are advanced as necessary.
-	bool GetCurrentMotion(uint32_t when, MotionParameters& mParams) noexcept;
+	bool GetCurrentMotion(uint32_t when, float multiplier, MotionParameters& mParams) noexcept;
 #endif
 
 	void ClearMovementPending() noexcept;
@@ -261,7 +261,7 @@ inline uint32_t DriveMovement::GetStepInterval(uint32_t microstepShift) const no
 // Get the current position relative to the start of this segment, speed and acceleration. Units are microsteps and step clocks.
 // Return true if this drive is moving. Segments are advanced as necessary if we are in closed loop mode.
 // Inlined because it is only called from one place
-inline bool DriveMovement::GetCurrentMotion(uint32_t when, MotionParameters& mParams) noexcept
+inline bool DriveMovement::GetCurrentMotion(uint32_t when, float multiplier, MotionParameters& mParams) noexcept
 {
 	bool hasMotion = false;
 	AtomicCriticalSectionLocker lock;									// we don't want 'segments' changing while we do this
@@ -281,9 +281,30 @@ inline bool DriveMovement::GetCurrentMotion(uint32_t when, MotionParameters& mPa
 				if (phaseStepControl.IsEnabled())
 				{
 					currentMotorPosition = positionAtSegmentStart + netStepsThisSegment;
-					distanceCarriedForwards += seg->GetLength() - (motioncalc_t)netStepsThisSegment;
 					phaseStepsTakenSinceMoveStart += seg->GetLength();
-					movementAccumulator += netStepsThisSegment;		// update the amount of extrusion
+					movementAccumulator += netStepsThisSegment;			// update the amount of extrusion
+
+					motioncalc_t provisionalDistanceCarriedForwards = distanceCarriedForwards + seg->GetLength() - (motioncalc_t)netStepsThisSegment;
+					if (seg->GetNext() == nullptr && !seg->GetFlags().isExtruder)
+					{
+						// This is an axis and there are no further segments, so we may need to round the current position to the nearest microstep
+						if (fabsm(provisionalDistanceCarriedForwards) < 0.05)
+						{
+							provisionalDistanceCarriedForwards = (motioncalc_t)0.0;						// just remove the rounding error
+						}
+						else if (provisionalDistanceCarriedForwards > (motioncalc_t)0.95)
+						{
+							++currentMotorPosition;														// round up to next microstep
+							provisionalDistanceCarriedForwards = (motioncalc_t)0.0;
+						}
+						else if (provisionalDistanceCarriedForwards < -(motioncalc_t)0.95)
+						{
+							--currentMotorPosition;														// round down to next position
+							provisionalDistanceCarriedForwards = (motioncalc_t)0.0;
+						}
+					}
+					distanceCarriedForwards = provisionalDistanceCarriedForwards;
+
 					MoveSegment *oldSeg = seg;
 					segments = oldSeg->GetNext();
 					MoveSegment::Release(oldSeg);
@@ -294,20 +315,17 @@ inline bool DriveMovement::GetCurrentMotion(uint32_t when, MotionParameters& mPa
 				timeSinceStart = seg->GetDuration();
 			}
 
-#if SUPPORT_S_CURVE
-			mParams.position = (float)((u + (0.5 * seg->GetA() + OneSixth * seg->GetJ() * timeSinceStart) * timeSinceStart) * timeSinceStart + (motioncalc_t)positionAtSegmentStart + distanceCarriedForwards);
-#else
-			mParams.position = (float)((u + seg->GetA() * timeSinceStart * 0.5) * timeSinceStart + (motioncalc_t)positionAtSegmentStart + distanceCarriedForwards);
-#endif
-			currentMotorPosition = (int32_t)mParams.position;			// store the approximate position for OM updates
-			mParams.speed = (float)(u + seg->GetA() * timeSinceStart);
-			mParams.acceleration = (float)seg->GetA();
+			const float rawPosition = (float)((u + seg->GetA() * timeSinceStart * 0.5) * timeSinceStart + (motioncalc_t)positionAtSegmentStart + distanceCarriedForwards);
+			currentMotorPosition = (int32_t)rawPosition;												// store the approximate position for OM updates
+			mParams.position = rawPosition * multiplier;
+			mParams.speed = (float)(u + seg->GetA() * timeSinceStart) * multiplier;
+			mParams.acceleration = (float)seg->GetA() * multiplier;
 			return true;
 		}
 	}
 
 	// If we get here then no movement is taking place
-	mParams.position = (float)((motioncalc_t)currentMotorPosition + distanceCarriedForwards);
+	mParams.position = (float)((motioncalc_t)currentMotorPosition + distanceCarriedForwards) * multiplier;
 	mParams.speed = mParams.acceleration = 0.0;
 	return hasMotion;
 }

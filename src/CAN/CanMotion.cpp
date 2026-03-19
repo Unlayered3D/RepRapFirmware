@@ -138,22 +138,8 @@ CanMessageBuffer *_ecv_null CanMotion::GetBuffer(const PrepParams& params, Drive
 			move->decelClocks = buf->next->msg.moveLinearShaped.decelClocks;
 		}
 
-#if SUPPORT_S_CURVE
-		if (params.jerk != 0.0)
-		{
-			// We don't support S-curve acceleration on expansion boards, so the best we can do is compute an average acceleration and scale it to unit distance
-			move->acceleration = (params.peakAcceleration * params.TotalAccelClocks() - 0.5 * params.jerk * (fsquare(params.accelStartClocks) + fsquare(params.accelEndClocks)))/(params.TotalAccelClocks() * params.totalDistance);
-			move->deceleration = (-params.peakDeceleration * params.TotalDecelClocks() - 0.5 * params.jerk * (fsquare(params.decelStartClocks) + fsquare(params.decelEndClocks)))/(params.TotalDecelClocks() * params.totalDistance);
-		}
-		else
-		{
-			move->acceleration = params.peakAcceleration/params.totalDistance;			// scale the acceleration to correspond to unit distance
-			move->deceleration = -params.peakDeceleration/params.totalDistance;			// scale the deceleration to correspond to unit distance
-		}
-#else
 		move->acceleration = params.acceleration/params.totalDistance;					// scale the acceleration to correspond to unit distance
 		move->deceleration = -params.deceleration/params.totalDistance;					// scale the deceleration to correspond to unit distance
-#endif
 		move->extruderDrives = 0;
 		move->numDrivers = canDriver.localDriver + 1;
 		move->zero1 = move->zero2 = 0;
@@ -253,7 +239,7 @@ bool CanMotion::CanPrepareMove() noexcept
 
 // This is called by the CanSender task to check if we have any urgent messages to send
 // The only urgent messages we may have currently are messages to stop drivers, or to tell them that all drivers have now been stopped and they need to revert to the requested stop position.
-CanMessageBuffer *CanMotion::GetUrgentMessage() noexcept
+CanMessageBuffer *_ecv_null CanMotion::GetUrgentMessage() noexcept
 {
 	if (!revertedAll)
 	{
@@ -285,6 +271,7 @@ CanMessageBuffer *CanMotion::GetUrgentMessage() noexcept
 					}
 				}
 
+				// Stop messages take priority over revert messages
 				if (driversToStop != 0)
 				{
 					auto stopMsg = urgentMessageBuffer.SetupRequestMessageNoRid<CanMessageStopMovement>(CanInterface::GetCanAddress(), sl->boardAddress);
@@ -318,31 +305,25 @@ CanMessageBuffer *CanMotion::GetUrgentMessage() noexcept
 
 // The next 4 functions may be called from the step ISR, so they can't send CAN messages directly
 
-void CanMotion::InsertHiccup(uint32_t numClocks) noexcept
-{
-	//TODO sort out how we tell expansion boards about hiccups
-//	hiccupToInsert += numClocks;
-//	CanInterface::WakeAsyncSender();
-}
-
 // Flag a CAN-connected driver as not moving when we haven't sent the movement message yet
 void CanMotion::StopDriverWhenProvisional(DriverId driver) noexcept
 {
 	// Search for the correct movement buffer
 	CanMessageBuffer* buf = movementBufferList;
-	while (buf != nullptr && buf->id.Dst() != driver.boardAddress)
+	while (buf != nullptr)
 	{
+		if (buf->id.Dst() == driver.boardAddress)
+		{
+			// The move was found so set the steps to zero. We still send the message so that the drivers get enabled.
+			buf->msg.moveLinearShaped.perDrive[driver.localDriver].steps = 0;
+			break;
+		}
 		buf = buf->next;
-	}
-
-	// If the move was found, set the steps to zero. We still send the message so that the drivers get enabled.
-	if (buf != nullptr)
-	{
-		buf->msg.moveLinearShaped.perDrive[driver.localDriver].steps = 0;
 	}
 }
 
-// Tell a CAN-connected driver to stop moving after we have sent the movement message
+// Tell a CAN-connected driver to stop moving after we have sent the movement message.
+// Return true if we found it, we hadn't already requested a stop, and now we have.
 bool CanMotion::StopDriverWhenExecuting(DriverId driver, int32_t netStepsTaken) noexcept
 {
 	DriversStopList *sl = stopList;
@@ -350,7 +331,7 @@ bool CanMotion::StopDriverWhenExecuting(DriverId driver, int32_t netStepsTaken) 
 	{
 		if (sl->boardAddress == driver.boardAddress)
 		{
-			if (sl->stopStates[driver.localDriver] == DriverStopState::active)			// if active and stop not yet requested
+			if (driver.localDriver < sl->numDrivers && sl->stopStates[driver.localDriver] == DriverStopState::active)			// if active and stop not yet requested
 			{
 				sl->stopSteps[driver.localDriver] = netStepsTaken;						// must assign this one first
 				sl->stopStates[driver.localDriver] = DriverStopState::stopRequested;

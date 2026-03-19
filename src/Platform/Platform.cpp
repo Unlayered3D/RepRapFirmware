@@ -348,7 +348,7 @@ Platform::Platform() noexcept :
 	panelDueUpdater(nullptr),
 #endif
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
-	sysDir(nullptr),
+	sysFolder(DEFAULT_SYS_DIR), webFolder(DEFAULT_WEB_DIR),
 #endif
 	tickState(0), debugCode(0),
 	lastDriverPollMillis(0),
@@ -1143,13 +1143,7 @@ void Platform::DisableAutoSave() noexcept
 
 bool Platform::IsPowerOk() const noexcept
 {
-	// FIXME Implement auto-save for the SBC
-	return (   !autoSaveEnabled
-#if HAS_SBC_INTERFACE
-			|| reprap.UsingSbcInterface()
-#endif
-		   )
-		|| currentVin > autoPauseReading;
+	return !autoSaveEnabled || currentVin > autoPauseReading;
 }
 
 void Platform::EnableAutoSave(float saveVoltage, float resumeVoltage) noexcept
@@ -1854,106 +1848,6 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 									(double)((float)(tim3 * (1'000'000/iterations))/SystemCoreClock), (ok3) ? "ok" : "ERROR");
 			}
 
-#if SUPPORT_S_CURVE
-			// Time and check floating point cube root
-			{
-				unsigned int numBad = 0, numBetter = 0, numWorse = 0, numEqual = 0, numSameError = 0;
-				uint32_t tim1 = 0, tim2 = 0;
-				for (unsigned int i = 0; i < iterations; ++i)
-				{
-					float val = 0.5 + (float)i * 3.5 / 1000.0;
-					if (i == 0) { val = 0.0; }
-					else if (i & 1) { val = -val; }
-
-					IrqDisable();
-					asm volatile("":::"memory");
-					uint32_t now1 = SysTick->VAL;
-					const float nval1 = fastCubeRootf(val);
-					uint32_t now2 = SysTick->VAL;
-					asm volatile("":::"memory");
-					IrqEnable();
-
-					now1 &= 0x00FFFFFF;
-					now2 &= 0x00FFFFFF;
-					tim1 += ((now1 > now2) ? now1 : now1 + (SysTick->LOAD & 0x00FFFFFF) + 1) - now2;
-
-					IrqDisable();
-					asm volatile("":::"memory");
-					uint32_t now3 = SysTick->VAL;
-					const volatile float nval2 = cbrt(val);
-					uint32_t now4 = SysTick->VAL;
-					asm volatile("":::"memory");
-					IrqEnable();
-
-					now3 &= 0x00FFFFFF;
-					now4 &= 0x00FFFFFF;
-					tim2 += ((now3 > now4) ? now3 : now3 + (SysTick->LOAD & 0x00FFFFFF) + 1) - now4;
-
-					bool thisOneOk = true;
-					if (val == 0.0)
-					{
-						thisOneOk = (nval1 == 0.0);
-					}
-					else if (val > 0.0)
-					{
-						thisOneOk = fcube(std::nextafter(nval1, nval1 * 2)) >= val && fcube(std::nextafter(nval1, 0.0)) <= val;
-					}
-					else
-					{
-						thisOneOk = fcube(std::nextafter(nval1, nval1 * 2)) <= val && fcube(std::nextafter(nval1, 0.0)) >= val;
-					}
-
-					if (!thisOneOk)
-					{
-						++numBad;
-					}
-					else if (nval1 == nval2)
-					{
-						++numEqual;
-					}
-					else
-					{
-						const float err1 = fcube(nval1) - val;
-						const float err2 = fcube(nval2) - val;
-						if (fabsf(err1) < fabsf(err2)) { ++numBetter; }
-						else if (fabsf(err1) > fabsf(err2)) { ++numWorse; }
-						else { ++numSameError; }
-						if (reprap.Debug(Module::Platform))
-						{
-							debugPrintf("val=% .7e fcr=% .7e cbrt=% .7e fcre=% .7e cbrte=% .7e\n", (double)val, (double)nval1, (double)nval2, (double)err1, (double)err1);
-						}
-					}
-				}
-
-				reply.lcatf("Cube roots: fcbrt %.2fus cbrt %.2fus, bad %u, equal %u, better %u, worse %u, sameError %u",
-							(double)((float)(tim1 * (1'000'000/iterations))/SystemCoreClock), (double)((float)(tim2 * (1'000'000/iterations))/SystemCoreClock),
-							numBad, numEqual, numBetter, numWorse, numSameError
-							);
-			}
-
-			// Time and check a cubic equation with three real roots (the most complicated case)
-			{
-				uint32_t tim1 = 0;
-				size_t numRoots;
-				float rslt[3] = { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN() };
-				for (unsigned int i = 0; i < iterations; ++i)
-				{
-					IrqDisable();
-					asm volatile("":::"memory");
-					uint32_t now1 = SysTick->VAL;
-					numRoots = SolveCubic(1.0, -6.0, 11.0, -6.0, rslt);
-					uint32_t now2 = SysTick->VAL;
-					asm volatile("":::"memory");
-					IrqEnable();
-
-					now1 &= 0x00FFFFFF;
-					now2 &= 0x00FFFFFF;
-					tim1 += ((now1 > now2) ? now1 : now1 + (SysTick->LOAD & 0x00FFFFFF) + 1) - now2;
-				}
-
-				reply.lcatf("Cubic equation solver: %.2fus, %u roots %.6f %.6f %.6f", (double)((float)(tim1 * (1'000'000/iterations))/SystemCoreClock), numRoots, (double)rslt[0], (double)rslt[1], (double)rslt[2]);
-			}
-#endif
 		}
 
 		// We now also time sine and cosine in the same test
@@ -2169,7 +2063,7 @@ bool Platform::WritePlatformParameters(FileStore *f, bool includingG31) const no
 
 // USB port functions
 
-void Platform::AppendUsbReply(OutputBuffer *buffer, bool rawMessage) noexcept
+void Platform::AppendUsbReply(const GCodeBuffer *_ecv_null gb, OutputBuffer *buffer, bool rawMessage) noexcept
 {
 	if (!SERIAL_MAIN_DEVICE.IsConnected())
 	{
@@ -2191,7 +2085,8 @@ void Platform::AppendUsbReply(OutputBuffer *buffer, bool rawMessage) noexcept
 			if (OutputBuffer::Allocate(buf))
 			{
 				usbMessageSeq++;
-				buf->printf("{\"seq\":%" PRIu32 ",\"resp\":", usbMessageSeq);
+				RepRap::StartJsonResponse(gb, buf);
+				buf->catf("\"seq\":%" PRIu32 ",\"resp\":", usbMessageSeq);
 				buf->EncodeReply(buffer);
 				buf->cat("}\n");
 				usbOutput.Push(buf);
@@ -2287,9 +2182,8 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 			gbp->Disable();				// disable I/O for this serial channel
 		}
 
-		commsParams[chan] = val;		// we limited the value of 'chan' when we fetched it, so no need for a range-check here
-
 #if HAS_AUX_DEVICES
+		commsParams[chan] = val;		// we limited the value of 'chan' when we fetched it, so no need for a range-check here
 		if (chan != 0)
 		{
 			AuxDevice& dev = auxDevices[chan - FirstAuxChannel];
@@ -2299,6 +2193,8 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 			}
 			dev.SetMode(newMode);
 		}
+#else
+		commsParams[0] = val;			// gcc thinks chan is 1 here so use 0 explicitly
 #endif
 
 		if (   gbp != nullptr
@@ -2940,12 +2836,12 @@ GCodeResult Platform::ReceiveI2cOrModbus(GCodeBuffer& gb, const StringRef &reply
 						break;
 					}
 				}
-				else
+				else if (resultVar == nullptr) // Only report comm error if not storing result in variable
 				{
 					reply.copy("no or bad response from Modbus device");
 				}
 			}
-			else
+			else if (resultVar == nullptr)
 			{
 				reply.copy("couldn't initiate Modbus transaction");
 			}
@@ -3016,7 +2912,7 @@ void Platform::InitPanelDueUpdater() noexcept
 }
 #endif
 
-void Platform::AppendAuxReply(size_t auxNumber, const char *_ecv_array msg, bool rawMessage) noexcept
+void Platform::AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb, const char *_ecv_array msg, bool rawMessage) noexcept
 {
 #if HAS_AUX_DEVICES
 	if (auxNumber < ARRAY_SIZE(auxDevices))
@@ -3026,12 +2922,12 @@ void Platform::AppendAuxReply(size_t auxNumber, const char *_ecv_array msg, bool
 		{
 			return;
 		}
-		auxDevices[auxNumber].AppendAuxReply(msg, rawMessage);
+		auxDevices[auxNumber].AppendAuxReply(gb, msg, rawMessage);
 	}
 #endif
 }
 
-void Platform::AppendAuxReply(size_t auxNumber, OutputBuffer *reply, bool rawMessage) noexcept
+void Platform::AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb, OutputBuffer *reply, bool rawMessage) noexcept
 {
 #if HAS_AUX_DEVICES
 	if (auxNumber < ARRAY_SIZE(auxDevices))
@@ -3042,7 +2938,7 @@ void Platform::AppendAuxReply(size_t auxNumber, OutputBuffer *reply, bool rawMes
 			OutputBuffer::ReleaseAll(reply);
 			return;
 		}
-		auxDevices[auxNumber].AppendAuxReply(reply, rawMessage);
+		auxDevices[auxNumber].AppendAuxReply(gb, reply, rawMessage);
 	}
 	else
 #endif
@@ -3052,7 +2948,7 @@ void Platform::AppendAuxReply(size_t auxNumber, OutputBuffer *reply, bool rawMes
 }
 
 // Send the specified message to the specified destinations. The Error and Warning flags have already been handled.
-void Platform::RawMessage(MessageType type, const char *_ecv_array message) noexcept
+void Platform::RawMessage(const GCodeBuffer *_ecv_null gb, MessageType type, const char *_ecv_array message) noexcept
 {
 #if HAS_MASS_STORAGE
 	// Deal with logging
@@ -3069,7 +2965,7 @@ void Platform::RawMessage(MessageType type, const char *_ecv_array message) noex
 	}
 	else if ((type & AuxMessage) != 0)
 	{
-		AppendAuxReply(0, message, message[0] == '{' || (type & RawMessageFlag) != 0);
+		AppendAuxReply(0, gb, message, message[0] == '{' || (type & RawMessageFlag) != 0);
 	}
 
 	if ((type & HttpMessage) != 0)
@@ -3084,7 +2980,7 @@ void Platform::RawMessage(MessageType type, const char *_ecv_array message) noex
 
 	if ((type & Aux2Message) != 0)
 	{
-		AppendAuxReply(1, message, message[0] == '{' || (type & RawMessageFlag) != 0);
+		AppendAuxReply(1, gb, message, message[0] == '{' || (type & RawMessageFlag) != 0);
 	}
 
 	if ((type & BlockingUsbMessage) != 0)
@@ -3129,11 +3025,13 @@ void Platform::RawMessage(MessageType type, const char *_ecv_array message) noex
 		}
 		else
 		{
+			// We need to wrap the message in JSON before sending it to USB
 			OutputBuffer *buf;
 			if (OutputBuffer::Allocate(buf))
 			{
 				usbMessageSeq++;
-				buf->printf("{\"seq\":%" PRIu32 ",\"resp\":\"%.s\"}\n", usbMessageSeq, message);
+				RepRap::StartJsonResponse(gb, buf);
+				buf->catf("\"seq\":%" PRIu32 ",\"resp\":\"%.s\"}\n", usbMessageSeq, message);
 				usbOutput.Push(buf);
 			}
 			// else we can't allocate a buffer, so discard the message
@@ -3141,10 +3039,15 @@ void Platform::RawMessage(MessageType type, const char *_ecv_array message) noex
 	}
 }
 
+void Platform::Message(MessageType type, OutputBuffer *buffer) noexcept
+{
+	Message(nullptr, type, buffer);
+}
+
 // Note: this overload of Platform::Message does not process the special action flags in the MessageType.
 // Also it treats calls to send a blocking USB message the same as ordinary USB messages,
 // and calls to send an immediate LCD message the same as ordinary LCD messages
-void Platform::Message(MessageType type, OutputBuffer *buffer) noexcept
+void Platform::Message(const GCodeBuffer *_ecv_null gb, MessageType type, OutputBuffer *buffer) noexcept
 {
 #if HAS_MASS_STORAGE
 	// First deal with logging because it doesn't hang on to the buffer
@@ -3177,13 +3080,13 @@ void Platform::Message(MessageType type, OutputBuffer *buffer) noexcept
 
 		if ((type & (AuxMessage | ImmediateAuxMessage)) != 0)
 		{
-			AppendAuxReply(0, buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
+			AppendAuxReply(0, gb, buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
 		}
 
 #ifdef SERIAL_AUX2_DEVICE
 		if ((type & Aux2Message) != 0)
 		{
-			AppendAuxReply(1, buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
+			AppendAuxReply(1, gb, buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
 		}
 #endif
 
@@ -3199,7 +3102,7 @@ void Platform::Message(MessageType type, OutputBuffer *buffer) noexcept
 
 		if ((type & (UsbMessage | BlockingUsbMessage)) != 0)
 		{
-			AppendUsbReply(buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
+			AppendUsbReply(gb, buffer, ((*buffer)[0] == '{') || (type & RawMessageFlag) != 0);
 		}
 
 #if HAS_SBC_INTERFACE
@@ -3211,7 +3114,7 @@ void Platform::Message(MessageType type, OutputBuffer *buffer) noexcept
 	}
 }
 
-void Platform::MessageV(MessageType type, const char *_ecv_array fmt, va_list vargs) noexcept
+void Platform::MessageV(const GCodeBuffer *_ecv_null gb, MessageType type, const char *_ecv_array fmt, va_list vargs) noexcept
 {
 	String<FormatStringLength> formatString;
 #if HAS_SBC_INTERFACE
@@ -3241,14 +3144,22 @@ void Platform::MessageV(MessageType type, const char *_ecv_array fmt, va_list va
 		formatString.vprintf(fmt, vargs);
 	}
 
-	RawMessage((MessageType)(type & ~(ErrorMessageFlag | WarningMessageFlag)), formatString.c_str());
+	RawMessage(gb, (MessageType)(type & ~(ErrorMessageFlag | WarningMessageFlag)), formatString.c_str());
 }
 
 void Platform::MessageF(MessageType type, const char *_ecv_array fmt, ...) noexcept
 {
 	va_list vargs;
 	va_start(vargs, fmt);
-	MessageV(type, fmt, vargs);
+	MessageV(nullptr, type, fmt, vargs);
+	va_end(vargs);
+}
+
+void Platform::MessageF(const GCodeBuffer *_ecv_null gb, MessageType type, const char *_ecv_array fmt, ...) noexcept
+{
+	va_list vargs;
+	va_start(vargs, fmt);
+	MessageV(gb, type, fmt, vargs);
 	va_end(vargs);
 }
 
@@ -3268,7 +3179,7 @@ void Platform::Message(MessageType type, const char *_ecv_array message) noexcep
 
 	if ((type & (ErrorMessageFlag | WarningMessageFlag)) == 0)
 	{
-		RawMessage(type, message);
+		RawMessage(nullptr, type, message);
 	}
 	else
 	{
@@ -3287,7 +3198,7 @@ void Platform::Message(MessageType type, const char *_ecv_array message) noexcep
 			String<FormatStringLength> formatString;
 			formatString.copy(((type & ErrorMessageFlag) != 0) ? "Error: " : "Warning: ");
 			formatString.cat(message);
-			RawMessage((MessageType)(type & ~(ErrorMessageFlag | WarningMessageFlag)), formatString.c_str());
+			RawMessage(nullptr, (MessageType)(type & ~(ErrorMessageFlag | WarningMessageFlag)), formatString.c_str());
 		}
 	}
 }
@@ -3349,6 +3260,7 @@ GCodeResult Platform::ConfigureLogging(GCodeBuffer& gb, const StringRef& reply) 
 			}
 			return logger->Start(realTime, filename, reply);
 		}
+		reprap.StateUpdated();						// logLevel has been changed to off, so the OM has been updated
 	}
 	else
 	{
@@ -3377,7 +3289,7 @@ const char *_ecv_array Platform::GetLogLevel() const noexcept
 {
 	static const LogLevel off = LogLevel::off;	// need to have an instance otherwise it will fail .ToString() below
 #if HAS_MASS_STORAGE
-	return (logger == nullptr) ? off.ToString() : logger->GetLogLevel().ToString();
+	return (logger == nullptr || !logger->IsActive()) ? off.ToString() : logger->GetLogLevel().ToString();
 #else
 	return off.ToString();
 #endif
@@ -3810,12 +3722,6 @@ bool Platform::FileExists(const char *_ecv_array folder, const char *_ecv_array 
 	return MassStorage::CombineName(location.GetRef(), folder, filename) && MassStorage::FileExists(location.c_str());
 }
 
-// Return a pointer to a string holding the directory where the system files are. Lock the sysdir lock before calling this.
-const char *_ecv_array Platform::InternalGetSysDir() const noexcept
-{
-	return (sysDir != nullptr) ? _ecv_not_null(sysDir) : DEFAULT_SYS_DIR;
-}
-
 bool Platform::SysFileExists(const char *_ecv_array filename) const noexcept
 {
 	String<MaxFilenameLength> location;
@@ -3835,43 +3741,42 @@ bool Platform::MakeSysFileName(const StringRef& result, const char *_ecv_array f
 	return MassStorage::CombineName(result, GetSysDir().Ptr(), filename);
 }
 
-void Platform::AppendSysDir(const StringRef & path) const noexcept
+ReadLockedPointer<const char> ConfigurableFolder::GetLockedPointer() const noexcept
 {
-	path.cat(GetSysDir().Ptr());
-}
-
-ReadLockedPointer<const char> Platform::GetSysDir() const noexcept
-{
-	return ReadLockedPointer<const char>(sysDirLock, InternalGetSysDir());
+	return ReadLockedPointer<const char>(lock, GetUnlockedPointer());
 }
 
 #endif
 
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 
-// Set the system files path
-GCodeResult Platform::SetSysDir(const char *_ecv_array dir, const StringRef& reply) noexcept
+void ConfigurableFolder::AppendToString(const StringRef& path) const noexcept
 {
-	String<MaxFilenameLength> newSysDir;
-	WriteLocker lock(sysDirLock);
+	ReadLocker locker(lock);
+	path.cat(GetUnlockedPointer());
+}
 
-	if (!MassStorage::CombineName(newSysDir.GetRef(), InternalGetSysDir(), dir) || (!newSysDir.EndsWith('/') && newSysDir.cat('/')))
+GCodeResult ConfigurableFolder::Configure(const char *_ecv_array dir, const StringRef& reply) noexcept
+{
+	String<MaxFilenameLength> newDir;
+	WriteLocker locker(lock);
+	if (!MassStorage::CombineName(newDir.GetRef(), GetUnlockedPointer(), dir) || (!newDir.EndsWith('/') && newDir.cat('/')))
 	{
 		reply.copy("Path name too long");
 		return GCodeResult::error;
 	}
 
-	if (!MassStorage::DirectoryExists(newSysDir.GetRef()))
+	if (!MassStorage::DirectoryExists(newDir.GetRef()))
 	{
-		reply.copy("Path not found");
+		reply.printf("Path \"%s\" not found", newDir.c_str());
 		return GCodeResult::error;
 	}
 
-	newSysDir.cat('/');								// the call to DirectoryExists removed the trailing '/'
-	const size_t len = newSysDir.strlen() + 1;
-	char *_ecv_array _ecv_null const nsd = new char[len];
-	memcpy(nsd, newSysDir.c_str(), len);
-	ReplaceObject(sysDir, nsd);
+	newDir.cat('/');								// the call to DirectoryExists removed the trailing '/'
+	const size_t len = newDir.strlen() + 1;
+	char *_ecv_array _ecv_null const newDirArray = new char[len];
+	memcpy(newDirArray, newDir.c_str(), len);
+	ReplaceObject(userValue, newDirArray);
 	reprap.DirectoriesUpdated();
 	return GCodeResult::ok;
 }
@@ -4106,16 +4011,20 @@ GCodeResult Platform::GetSetAncillaryPwm(GCodeBuffer& gb, const StringRef& reply
 	bool seen = gb.TryGetLimitedIValue('P', tempPort, seen, -1, MaxGpOutPorts - 1);
 	if (seen)
 	{
-		if (   tempPort >= 0
-			&& (   GetGpOutPort(tempPort).IsUnused()
-#if SUPPORT_CAN_EXPANSION
-				|| !GetGpOutPort(tempPort).IsLocal()
-#endif
-			   )
-		   )
+		if (tempPort >= 0)
 		{
-			reply.printf("GpOut port %" PRIu32 " is not valid", tempPort);
-			return GCodeResult::error;
+			if (GetGpOutPort(tempPort).IsUnused())
+			{
+				reply.printf("GpOut port %" PRIu32 " has not been created", tempPort);
+				return GCodeResult::error;
+			}
+#if SUPPORT_CAN_EXPANSION
+			if (!GetGpOutPort(tempPort).IsLocal())
+			{
+				reply.printf("Remote GpOut port %" PRIu32 " not allowed here", tempPort);
+				return GCodeResult::error;
+			}
+#endif
 		}
 
 		extrusionAncilliaryPwmGpOutNumber = tempPort;

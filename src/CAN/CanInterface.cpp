@@ -80,11 +80,9 @@ constexpr uint32_t MaxBitRate = 5000;
 
 constexpr float MinSamplePoint = 0.5;
 constexpr float MaxSamplePoint = 0.95;
-constexpr float DefaultSamplePoint = 0.75;
 
 constexpr float MinJumpWidth = 0.05;
 constexpr float MaxJumpWidth = 0.5;
-constexpr float DefaultJumpWidth = 0.25;
 
 static Mutex transactionMutex;
 
@@ -328,7 +326,7 @@ void CanInterface::Init() noexcept
 	canReceiverTask.Create(CanReceiverLoop, "CanReceiver", nullptr, TaskPriority::CanReceiverPriority);
 
 #if DUAL_CAN
-	timing.SetDefaults_250kb();
+	timing.SetDefaults(250'000);
 	can1dev = CanDevice::Init(1, SecondaryCanDeviceNumber, Can1Config, can1Memory, timing, nullptr);
 	can1dev->SetShortFilterElement(0, CanDevice::RxBufferNumber::fifo0, 0, 0);			// set up a filter to receive all messages in FIFO 0
 	can1dev->SetExtendedFilterElement(0, CanDevice::RxBufferNumber::fifo0, 0, 0);
@@ -403,7 +401,7 @@ void CanInterface::SendAnnounce(CanMessageBuffer *buf) noexcept
 		memcpy(msg->uniqueId, reprap.GetPlatform().GetUniqueId().GetRaw(), sizeof(msg->uniqueId));
 		// Note, board type name, firmware version, firmware date and firmware time are limited to 43 characters in the new
 		// We use vertical-bar to separate the three fields: board type, firmware version, date/time
-		SafeSnprintf(msg->boardTypeAndFirmwareVersion, ARRAY_SIZE(msg->boardTypeAndFirmwareVersion), "%s|%s|%s%.6s", BOARD_SHORT_NAME, VERSION, DateText, TIME_SUFFIX);
+		SafeSnprintf(msg->boardTypeAndFirmwareVersion, ARRAY_SIZE(msg->boardTypeAndFirmwareVersion), "%s|%s|%s%.6s", BOARD_SHORT_NAME, VERSION, DateText, TimeSuffix);
 		buf->dataLength = msg->GetActualDataLength();
 		SendMessageNoReplyNoFree(buf);
 	}
@@ -1333,6 +1331,11 @@ void CanInterface::WakeAsyncSender() noexcept
 	}
 }
 
+void CanInterface::WakeAsyncSenderFromIsr() noexcept
+{
+	canSenderTask.GiveFromISR(NotifyIndices::CanSender);
+}
+
 // Remote handle functions
 GCodeResult CanInterface::CreateHandle(CanAddress boardAddress, RemoteInputHandle h, const char *_ecv_array pinName, uint16_t threshold, uint16_t minInterval,
 										bool *_ecv_null currentState, const StringRef& reply) noexcept
@@ -1611,22 +1614,29 @@ GCodeResult CanInterface::ChangeAddressAndNormalTiming(GCodeBuffer& gb, const St
 			return GCodeResult::error;
 		}
 		speed *= 1000;
-		timing.period = (CanTiming::ClockFrequency + speed - 1)/speed;
-		const float tseg1 = gb.Seen('T') ? gb.GetFValue() : DefaultSamplePoint;
-		if (tseg1 < MinSamplePoint || tseg1 > MaxSamplePoint)
-		{
-			reply.copy("Sample point out of range");
-			return GCodeResult::error;
-		}
-		timing.tseg1 = lrintf(timing.period * tseg1);
+		timing.SetDefaults(speed);
 
-		const float jumpWidth = (gb.Seen('J')) ? gb.GetFValue() : DefaultJumpWidth;
-		if (jumpWidth < MinJumpWidth || jumpWidth > MaxJumpWidth)
+		if (gb.Seen('T'))
 		{
-			reply.copy("Jump width out of range");
-			return GCodeResult::error;
+			const float samplePoint = gb.GetFValue();
+			if (samplePoint < MinSamplePoint || samplePoint > MaxSamplePoint)
+			{
+				reply.copy("Sample point out of range");
+				return GCodeResult::error;
+			}
+			timing.SetSamplePoint(samplePoint);
 		}
-		timing.jumpWidth = constrain<uint16_t>(lrintf(timing.period * jumpWidth), 1, timing.period - timing.tseg1 - 2);
+
+		if (gb.Seen('J'))
+		{
+			const float jumpWidth = gb.GetFValue();
+			if (jumpWidth < MinJumpWidth || jumpWidth > MaxJumpWidth)
+			{
+				reply.copy("Jump width out of range");
+				return GCodeResult::error;
+			}
+			timing.SetJumpWidth(jumpWidth);
+		}
 		changeTiming = true;
 	}
 
@@ -1639,9 +1649,9 @@ GCodeResult CanInterface::ChangeAddressAndNormalTiming(GCodeBuffer& gb, const St
 		else
 		{
 			can0dev->GetLocalCanTiming(timing);
-			reply.printf("CAN bus speed %.1fkbps, tseg1 %.2f, jump width %.2f",
+			reply.printf("CAN bus speed %.1fkbps, sample point %.2f, jump width %.2f",
 							(double)((float)CanTiming::ClockFrequency/(1000 * timing.period)),
-							(double)((float)timing.tseg1/(float)timing.period),
+							(double)((float)(timing.tseg1 + 1)/(float)timing.period),
 							(double)((float)timing.jumpWidth/(float)timing.period));
 		}
 		return GCodeResult::ok;

@@ -60,7 +60,7 @@ constexpr ObjectModelTableEntry GCodeBuffer::objectModelTable[] =
 	{ "compatibility",		OBJECT_MODEL_FUNC(self->machineState->compatibility.ToString()),					ObjectModelEntryFlags::none },
 	{ "distanceUnit",		OBJECT_MODEL_FUNC(self->GetDistanceUnits()),										ObjectModelEntryFlags::none },
 	{ "drivesRelative",		OBJECT_MODEL_FUNC((bool)self->machineState->drivesRelative),						ObjectModelEntryFlags::none },
-	{ "feedRate",			OBJECT_MODEL_FUNC(InverseConvertSpeedToMmPerSec(self->machineState->feedRate), 1),	ObjectModelEntryFlags::liveNotPanelDue },
+	{ "feedRate",			OBJECT_MODEL_FUNC(self->machineState->feedRate, 1),									ObjectModelEntryFlags::liveNotPanelDue },
 	{ "inMacro",			OBJECT_MODEL_FUNC((bool)self->machineState->doingFileMacro),						ObjectModelEntryFlags::liveNotPanelDue },
 	{ "inverseTimeMode",	OBJECT_MODEL_FUNC((bool)self->machineState->inverseTimeMode),						ObjectModelEntryFlags::none },
 	{ "lineNumber",			OBJECT_MODEL_FUNC((int32_t)self->GetLineNumber()),									ObjectModelEntryFlags::liveNotPanelDue },
@@ -115,7 +115,7 @@ GCodeBuffer::GCodeBuffer(GCodeChannel::RawType channel, GCodeInput *_ecv_from no
 	  stringParser(*this),
 	  machineState(new GCodeMachineState()), whenReportDueTimerStarted(millis()), lastStatusReportType(StatusReportType::none),
 	  codeChannel(channel), lastResult(GCodeResult::ok),
-	  disabled(false), timerRunning(false), motionCommanded(false)
+	  disabled(false), timerRunning(false), motionCommanded(false), hadExplicitLineNumber(false)
 
 #if HAS_SBC_INTERFACE
 	  , isWaitingForMacro(false), isBinaryBuffer(false), invalidated(false)
@@ -247,23 +247,28 @@ void GCodeBuffer::Diagnostics(const StringRef& reply) noexcept
 		break;
 	}
 
-	reply.cat(" in state(s)");
-	const GCodeMachineState *_ecv_null ms = machineState;
-	do
-	{
-		reply.catf(" %d", (int)ms->GetState());
-		ms = ms->GetPrevious();
-	} while (ms != nullptr);
-	if (IsDoingFileMacro())
-	{
-		reply.cat(", running macro");
-	}
+	if (machineState->GetPrevious() != nullptr ||
+		machineState->GetState() != GCodeState::normal || IsDoingFileMacro()
 #if SUPPORT_ASYNC_MOVES
-	if (syncState != SyncState::running)
-	{
-		reply.catf(", sync state %u", (unsigned int)syncState);
-	}
+		|| syncState != SyncState::running
 #endif
+	)
+	{
+		reply.cat(" in state(s)");
+		const GCodeMachineState *_ecv_null ms = machineState;
+		do {
+			reply.catf(" %d", (int)ms->GetState());
+			ms = ms->GetPrevious();
+		} while (ms != nullptr);
+		if (IsDoingFileMacro()) {
+			reply.cat(", running macro");
+		}
+#if SUPPORT_ASYNC_MOVES
+		if (syncState != SyncState::running) {
+			reply.catf(", sync state %u", (unsigned int)syncState);
+		}
+#endif
+	}
 }
 
 // Add a character to the end
@@ -435,6 +440,24 @@ bool GCodeBuffer::IsLaterThan(const GCodeBuffer& other) const noexcept
 
 #endif
 
+// Set the line number, if we are at the top level of the stack excluding any local pushes
+void GCodeBuffer::SetExplicitLineNumber(uint32_t ln) noexcept
+{
+	if (CurrentFileMachineState().GetPrevious() == nullptr)
+	{
+		receivedLineNumber = ln; hadExplicitLineNumber = true;
+	}
+}
+
+// Clear the line number, if we are at the top level of the stack excluding any local pushes
+void GCodeBuffer::ClearExplicitLineNumber() noexcept
+{
+	if (CurrentFileMachineState().GetPrevious() == nullptr)
+	{
+		hadExplicitLineNumber = false;
+	}
+}
+
 // Return true if the command we have just completed was the last command in the line of GCode.
 // If the command was or called a macro then there will be no command in the buffer, so we must return true for this case also.
 bool GCodeBuffer::IsLastCommand() const noexcept
@@ -525,12 +548,6 @@ float GCodeBuffer::GetLimitedFValue(char c, float minValue, float maxValue) THRO
 float GCodeBuffer::GetDistance() THROWS(GCodeException)
 {
 	return ConvertDistance(GetFValue());
-}
-
-// Get a speed in mm/min or inches/min and convert it to mm/step_clock
-float GCodeBuffer::GetSpeed() THROWS(GCodeException)
-{
-	return ConvertSpeed(GetFValue());
 }
 
 // Get a speed in mm/min mm/sec and convert it to mm/step_clock
@@ -971,15 +988,9 @@ float GCodeBuffer::InverseConvertDistance(float distance) const noexcept
 }
 
 // Convert speed from mm/min or inches/min to mm per step clock
-float GCodeBuffer::ConvertSpeed(float speed) const noexcept
+float GCodeBuffer::ConvertSpeed(float speed, bool convertInches) const noexcept
 {
-	return speed * ((UsingInches()) ? InchToMm/(StepClockRate * iMinutesToSeconds) : 1.0/(StepClockRate * iMinutesToSeconds));
-}
-
-// Convert speed to mm/min or inches/min
-float GCodeBuffer::InverseConvertSpeed(float speed) const noexcept
-{
-	return speed * ((UsingInches()) ? (StepClockRate * iMinutesToSeconds)/InchToMm : (float)(StepClockRate * iMinutesToSeconds));
+	return speed * ((convertInches && UsingInches()) ? InchToMm/(StepClockRate * iMinutesToSeconds) : 1.0/(StepClockRate * iMinutesToSeconds));
 }
 
 const char *_ecv_array GCodeBuffer::GetDistanceUnits() const noexcept
@@ -1242,7 +1253,7 @@ void GCodeBuffer::MessageAcknowledged(bool cancelled, bool shouldAbort, uint32_t
 MessageType GCodeBuffer::GetResponseMessageType() const noexcept
 {
 #if HAS_SBC_INTERFACE
-	if (machineState->lastCodeFromSbc || (GetCommandLetter() == 'M' && GetCommandNumber() == 121))
+	if (machineState->lastCodeFromSbc)
 	{
 		return (MessageType)((1u << codeChannel.ToBaseType()) | BinaryCodeReplyFlag);
 	}
