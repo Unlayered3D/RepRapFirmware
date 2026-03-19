@@ -69,9 +69,6 @@ private:
 
 	bool modified;							// true if matrix has been altered
 	float a5, d6;
-
-	float xJointLimits[2];
-	float zJointLimits[2];
 };
 
 #endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */
