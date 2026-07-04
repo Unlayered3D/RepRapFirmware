@@ -320,6 +320,7 @@ void PolarKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *_ecv_arra
 			dda.LimitSpeedAndAcceleration(stepRatio * maxTurntableSpeed, stepRatio * maxTurntableAcceleration);
 		}
 	}
+	// Per-physical-motor limits (M203.2/M201.2/M205.2) are applied by the DDA from the real motor step deltas.
 }
 
 // Return true if the specified axis is a continuous rotation axis

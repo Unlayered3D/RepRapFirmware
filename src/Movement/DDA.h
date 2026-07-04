@@ -22,6 +22,7 @@
 
 class DDARing;
 class CanMessageMovementLinearShaped;
+class Kinematics;
 
 // Struct for passing parameters to the DriveMovement Prepare methods, also accessed by the input shaper
 struct PrepParams
@@ -175,6 +176,7 @@ private:
 	static void DoLookahead(DDARing& ring, DDA *laDDA) noexcept SPEED_CRITICAL;	// Try to smooth out moves in the queue
 
 	void MatchSpeeds() noexcept SPEED_CRITICAL;
+	void ApplyPerMotorLimits(const Kinematics& k) noexcept;					// Apply per-physical-motor speed/acceleration limits (M203.2/M201.2/M205.2)
 	bool IsDecelerationMove() const noexcept;								// return true if this move is or have been might have been intended to be a deceleration-only move
 	bool IsAccelerationMove() const noexcept;								// return true if this move is or have been might have been intended to be an acceleration-only move
 	void DebugPrintVector(const char *_ecv_array name, const float *_ecv_array vec, size_t len) const noexcept;

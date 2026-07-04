@@ -49,6 +49,10 @@
 # include <CAN/CanInterface.h>
 #endif
 
+#if SUPPORT_MMU2S
+# include <Comms/MMU2S/MMU2S.h>
+#endif
+
 constexpr const char *_ecv_array TargetUnreachableText = "target position outside machine limits";		// message used for both G0/1 and G2/3 moves
 
 #if HAS_AUX_DEVICES
@@ -2311,6 +2315,27 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 		}
 	}
 
+	// 180-degree shortest-path wraparound for kinematics with coupled continuous rotary axes (e.g. 5-axis turntable).
+	// We do this in USER space so that the user and machine coordinate frames stay consistent (ToolOffsetTransform
+	// rebuilds ms.coords from currentUserPosition every move). For each requested axis, shift the commanded target by
+	// +/-360 toward the previous position until the change is within (-180, 180], so a slicer target near +180 reached
+	// from near -180 takes the short path. The axis coordinate is allowed to drift past +/-180 over a long print, like
+	// RRF's other continuous-rotation axes. Skipping this (or doing it in machine space only) produced phantom multi-turn
+	// moves and OutOfMemory resets.
+	if (ms.moveType == 0)
+	{
+		const AxesBitmap shortestPathAxes = move.GetKinematics().GetShortestPathRotaryAxes();
+		if (shortestPathAxes.IsNonEmpty())
+		{
+			shortestPathAxes.Iterate([&ms, &initialUserPosition](unsigned int axis, unsigned int) noexcept
+			{
+				float delta = ms.currentUserPosition[axis] - initialUserPosition[axis];
+				while (delta > 180.0) { ms.currentUserPosition[axis] -= 360.0; delta -= 360.0; }
+				while (delta <= -180.0) { ms.currentUserPosition[axis] += 360.0; delta += 360.0; }
+			});
+		}
+	}
+
 	LoadFeedrateFromGCode(gb, ms);														// set up feedrate before we do the endstop calculations
 
 	AxesBitmap realAxesMoving;															// we'll need this later but only if ms.moveType == 0
@@ -2508,6 +2533,9 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 			{
 				axesToLimit.ClearBit(Z_AXIS);									// if doing a manual Z probe, don't limit the Z movement
 			}
+			// Continuous shortest-path rotary axes drift past +/-180 by design, so don't let M208 clamp them
+			// (a clamp would truncate the wrapped target). See the user-space wrap above.
+			axesToLimit &= ~move.GetKinematics().GetShortestPathRotaryAxes();
 
 			const LimitPositionResult lp = move.GetKinematics().LimitPosition(ms.coords, ms.initialCoords, numVisibleAxes, axesToLimit, ms.isCoordinated, limitAxes);
 			switch (lp)
@@ -2578,6 +2606,21 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 			const float moveLength = fastSqrtf(moveLengthSquared);
 			const float moveTime = moveLength/(ms.feedRate * StepClockRate);		// this is a best-case time, often the move will take longer
 
+			// For kinematics with rotary coupling (e.g. 5-axis), the Cartesian nozzle path curves as the rotary
+			// axes turn, so we must segment by angular change as well as by linear length. degPerSeg == 0 disables this.
+			// (We must NOT fold degrees into moveLengthSquared above: that double-counts via both the length and time
+			// terms below and massively over-segments rotary-dominated moves.)
+			const float degPerSeg = kin.GetDegreesPerSegment();
+			float maxRotaryChange = 0.0;
+			if (degPerSeg > 0.0)
+			{
+				move.GetRotationalAxes().Iterate([&maxRotaryChange, &ms, &initialUserPosition](unsigned int axis, unsigned int) noexcept
+				{
+					const float d = fabsf(ms.currentUserPosition[axis] - initialUserPosition[axis]);
+					if (d > maxRotaryChange) { maxRotaryChange = d; }
+				});
+			}
+
 #if SUPPORT_LASER
 			if (machineType == MachineType::laser && isCoordinated && ms.laserPixelData.numPixels > 1)
 			{
@@ -2591,7 +2634,14 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 				if (st.useSegmentation && simulationMode != SimulationMode::normal && (ms.hasPositiveExtrusion || ms.isCoordinated || st.useG0Segmentation))
 				{
 					// This kinematics approximates linear motion by means of segmentation
-					ms.totalSegments = (unsigned int)max<long>(1, lrintf(min<float>(moveLength * kin.GetReciprocalMinSegmentLength(), moveTime * kin.GetSegmentsPerSecond())));
+					unsigned int segments = (unsigned int)max<long>(1, lrintf(min<float>(moveLength * kin.GetReciprocalMinSegmentLength(), moveTime * kin.GetSegmentsPerSecond())));
+					if (maxRotaryChange > 0.0)
+					{
+						// Bound the angular change per segment so the curved path stays accurate without over-segmenting.
+						const unsigned int rotSegments = (unsigned int)ceilf(maxRotaryChange / degPerSeg);
+						if (rotSegments > segments) { segments = rotSegments; }
+					}
+					ms.totalSegments = segments;
 				}
 				else
 				{
@@ -3305,7 +3355,25 @@ void GCodes::NewSegmentableMoveAvailable(MovementState& ms) noexcept
 		}
 		const float moveLength = fastSqrtf(moveLengthSquared);
 		const float moveTime = moveLength/(ms.feedRate * StepClockRate);	// this is a best-case time, often the move will take longer
-		ms.totalSegments = (unsigned int)max<long>(1, lrintf(min<float>(moveLength * kin.GetReciprocalMinSegmentLength(), moveTime * kin.GetSegmentsPerSecond())));
+		unsigned int segments = (unsigned int)max<long>(1, lrintf(min<float>(moveLength * kin.GetReciprocalMinSegmentLength(), moveTime * kin.GetSegmentsPerSecond())));
+
+		// Match DoStraightMove: for rotary-coupled kinematics, also bound the angular change per segment.
+		const float degPerSeg = kin.GetDegreesPerSegment();
+		if (degPerSeg > 0.0)
+		{
+			float maxRotaryChange = 0.0;
+			reprap.GetMove().GetRotationalAxes().Iterate([&maxRotaryChange, &ms](unsigned int axis, unsigned int) noexcept
+			{
+				const float d = fabsf(ms.coords[axis] - ms.initialCoords[axis]);
+				if (d > maxRotaryChange) { maxRotaryChange = d; }
+			});
+			if (maxRotaryChange > 0.0)
+			{
+				const unsigned int rotSegments = (unsigned int)ceilf(maxRotaryChange / degPerSeg);
+				if (rotSegments > segments) { segments = rotSegments; }
+			}
+		}
+		ms.totalSegments = segments;
 	}
 	else
 	{
@@ -4471,6 +4539,9 @@ GCodeResult GCodes::LoadFilament(GCodeBuffer& gb, const StringRef& reply) THROWS
 		}
 
 		SafeStrncpy(filamentToLoad, filamentName.c_str(), ARRAY_SIZE(filamentToLoad));
+
+		// MMU2S note: with the MMU driven from macros, M701 just runs the normal load-filament macro,
+		// which can itself call M1750 to drive the MMU if desired.
 		gb.SetState(GCodeState::loadingFilament);
 
 		String<StringLength256> scratchString;
@@ -4513,6 +4584,8 @@ GCodeResult GCodes::UnloadFilament(GCodeBuffer& gb, const StringRef& reply) THRO
 
 	if (tool->GetFilament()->IsLoaded())			// if no filament is loaded, nothing to do
 	{
+		// MMU2S note: with the MMU driven from macros, M702 just runs the normal unload-filament macro,
+		// which can itself call M1750 U to drive the MMU if desired.
 		gb.SetState(GCodeState::unloadingFilament);
 		String<StringLength256> scratchString;
 		scratchString.printf("%s%s/%s", FILAMENTS_DIRECTORY, tool->GetFilament()->GetName(), UNLOAD_FILAMENT_G);
@@ -5196,6 +5269,8 @@ OutputBuffer *_ecv_null GCodes::GenerateJsonStatusResponse(int type, int seq, Re
 void GCodes::StartToolChange(GCodeBuffer& gb, MovementState& ms, uint8_t param) noexcept
 {
 	ms.toolChangeParam = (IsSimulating()) ? 0u : param;
+	// Standard tool change: toolChange0 (tfree) -> toolChange1 (tpre) -> toolChange2 (select + tpost).
+	// For MMU2S, the macros (tfree/tpre/tpost) drive the MMU via M1750; no firmware interception here.
 	gb.SetState(GCodeState::toolChange0);
 }
 

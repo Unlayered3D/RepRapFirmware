@@ -55,6 +55,12 @@ Kinematics::Kinematics(KinematicsType t, SegmentationType segType) noexcept
 	: segmentsPerSecond(DefaultSegmentsPerSecond), minSegmentLength(DefaultMinSegmentLength), reciprocalMinSegmentLength(1.0/DefaultMinSegmentLength),
 	  segmentationType(segType), type(t)
 {
+	for (size_t i = 0; i < MaxAxes; ++i)
+	{
+		motorMaxFeedrates[i] = FLT_MAX;
+		motorMaxAccelerations[i] = FLT_MAX;
+		motorMaxJerks[i] = FLT_MAX;
+	}
 }
 
 // Set or report the parameters from a M665, M666 or M669 command
@@ -278,6 +284,7 @@ void Kinematics::LimitSpeedAndAcceleration(DDA& dda, const float *_ecv_array nor
 		const float xyFactor = xySum * fastSqrtf(fsquare(dx) + fsquare(dy));
 		dda.LimitSpeedAndAcceleration(maxSpeedTimesXySum/xyFactor, maxAccelerationTimesXySum/xyFactor);
 	}
+	// Per-physical-motor limits (M203.2/M201.2/M205.2) are applied by the DDA from the real motor step deltas.
 }
 
 /*static*/ Kinematics *_ecv_from Kinematics::Create(KinematicsType k) noexcept

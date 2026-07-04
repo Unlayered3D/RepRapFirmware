@@ -18,7 +18,9 @@ enum class StraightProbeType : uint8_t {
 	towardsWorkpieceErrorOnFailure,  // probe toward workpiece, stop on contact, signal error if failure
 	towardsWorkpiece,				 // probe toward workpiece, stop on contact
 	awayFromWorkpieceErrorOnFailure, // probe away from workpiece, stop on loss of contact, signal error if failure
-	awayFromWorkpiece				 // probe away from workpiece, stop on loss of contact
+	awayFromWorkpiece,				 // probe away from workpiece, stop on loss of contact
+	towardsWorkpieceErrorOnFailureRepeated  // probe toward workpiece, stop on contact, signal error if failure
+
 };
 
 class StraightProbeSettings
@@ -66,7 +68,7 @@ inline const bool StraightProbeSettings::ProbingAway() const noexcept
 
 inline const bool StraightProbeSettings::SignalError() const noexcept
 {
-	return type == StraightProbeType::awayFromWorkpieceErrorOnFailure || type == StraightProbeType::towardsWorkpieceErrorOnFailure;
+	return type == StraightProbeType::awayFromWorkpieceErrorOnFailure || type == StraightProbeType::towardsWorkpieceErrorOnFailure || type == StraightProbeType::towardsWorkpieceErrorOnFailureRepeated;
 }
 
 #endif /* SRC_MOVEMENT_STRAIGHTPROBESETTINGS_H_ */

@@ -486,6 +486,9 @@ private:
 	GCodeResult RetractFilament(GCodeBuffer& gb, bool retract) THROWS(GCodeException);			// Retract or un-retract filaments
 	GCodeResult LoadFilament(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// Load the specified filament into a tool
 	GCodeResult UnloadFilament(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// Unload the current filament from a tool
+#if SUPPORT_MMU2S
+	GCodeResult HandleMMU2SDirectCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// M1750 handler
+#endif
 	bool ChangeMicrostepping(size_t axisOrExtruder, unsigned int microsteps, bool interp, const StringRef& reply) const noexcept; // Change microstepping on the specified drive
 	void CheckTriggers() noexcept;															// Check for and execute triggers
 	void DoEmergencyStop() noexcept;														// Execute an emergency stop
@@ -644,6 +647,9 @@ private:
 	const GCodeBuffer *_ecv_null resourceOwners[NumResources];			// Which gcode buffer owns each resource
 
 	StraightProbeSettings straightProbeSettings;						// G38 straight probe settings
+	float straightProbePrevStoppedDistance;
+	int   straightProbeTapsDone;
+	float straightProbeStartCoords[MaxAxes];
 	union
 	{
 		M675Settings m675Settings;

@@ -13,6 +13,9 @@
 enum class AuxMode : uint8_t
 {
 	disabled, raw, panelDue, device,
+#if SUPPORT_MMU2S
+	mmu2s,
+#endif
 };
 
 #if HAS_AUX_DEVICES
@@ -41,6 +44,9 @@ public:
 	AuxMode GetMode() const noexcept { return mode; }
 	uint32_t GetBaudRate() const noexcept { return baudRate; }
 	bool IsRaw() const noexcept { return mode == AuxMode::raw; }
+#if SUPPORT_MMU2S
+	bool IsMMU2S() const noexcept { return mode == AuxMode::mmu2s; }
+#endif
 
 	void SendPanelDueMessage(const char *_ecv_array msg) noexcept;
 	void AppendAuxReply(const GCodeBuffer *_ecv_null gb, const char *_ecv_array msg, bool rawMessage) noexcept;

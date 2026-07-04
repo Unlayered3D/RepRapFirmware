@@ -71,6 +71,10 @@ static_assert(CONF_HSMCI_XDMAC_CHANNEL == DmacChanHsmci, "mismatched DMA channel
 # include <CAN/ExpansionManager.h>
 #endif
 
+#if SUPPORT_MMU2S
+# include <Comms/MMU2S/MMU2S.h>
+#endif
+
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -500,6 +504,10 @@ void RepRap::Init() noexcept
 	printMonitor->Init();
 	FilamentMonitor::InitStatic();
 
+#if SUPPORT_MMU2S
+	MMU2S::InitStatic();
+#endif
+
 #if SUPPORT_IOBITS
 	portControl->Init();
 #endif
@@ -648,8 +656,10 @@ void RepRap::Init() noexcept
 
 	platform->MessageF(UsbMessage, "%s is up and running.\n", FIRMWARE_NAME);
 
+
 	fastLoop = UINT32_MAX;
 	slowLoop = 0;
+	LoadStatistics();
 }
 
 // Run a startup file
@@ -693,6 +703,7 @@ void RepRap::Exit() noexcept
 
 void RepRap::Spin() noexcept
 {
+//	platform->MessageF(UsbMessage, "Spin Start = %.3f\n", stats.lifetimePrintHours);
 	if (!active)
 	{
 		return;
@@ -715,6 +726,12 @@ void RepRap::Spin() noexcept
 	ticksInSpinState = 0;
 	spinningModule = Module::FilamentSensors;
 	FilamentMonitor::Spin();
+
+#if SUPPORT_MMU2S
+	ticksInSpinState = 0;
+	spinningModule = Module::MMU2S;
+	MMU2S::Spin();
+#endif
 
 #if SUPPORT_DIRECT_LCD
 	ticksInSpinState = 0;
@@ -808,9 +825,272 @@ void RepRap::Spin() noexcept
 		}
 	}
 
+
+	if ((millis() - lastStatsSaveMs) > saveIntervalMs)
+	{
+	    SaveStatistics();
+	    lastStatsSaveMs = millis();
+	}
+
+	static uint32_t lastUpdateMs = millis();
+
+	static float lastMachinePos[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+
+	uint32_t now2 = millis();
+
+
+	float dtSeconds =
+	    (now2 - lastUpdateMs) / 1000.0f;
+
+
+	lastUpdateMs = now2;
+
+	float deltaMachinePos[6];
+
+	//for all of the existing axes
+	float curMachinePos[gCodes->GetVisibleAxes()];
+
+	move->GetCurrentMachinePosition(curMachinePos, 0);
+
+
+	for(size_t i = 0; i < 6; i++){
+		float curAxesPos = 0;
+
+		if(i < gCodes->GetVisibleAxes()){
+			curAxesPos = curMachinePos[i];
+		}
+		//get the actual position value
+		//store the change
+		deltaMachinePos[i] = fabs(lastMachinePos[i] - curAxesPos);
+		//store the new value
+		lastMachinePos[i] = curAxesPos;
+
+	}
+
+
+	// Check all visible axes are homed
+	bool allHomed = true;
+	for (size_t i = 0; i < gCodes->GetVisibleAxes(); i++)
+	{
+	    if (!gCodes->IsAxisHomed(i))
+	    {
+	        allHomed = false;
+	        break;
+	    }
+	}
+
+	//always measure axis moves
+    //store positions and rotation totals
+	if(allHomed){
+		stats.xMillis += (double)deltaMachinePos[0];
+		stats.yMillis += (double)deltaMachinePos[1];
+		stats.zMillis += (double)deltaMachinePos[2];
+		stats.bDegrees += (double)deltaMachinePos[3];
+		stats.cDegrees += (double)deltaMachinePos[4];
+	}
+
+	//store extruder use
+    stats.eMillis += (double)(move->GetTotalExtrusionRate() * dtSeconds);
+
+
+
+	static bool jobEdgeDetector = false;
+
+	if (gCodes->IsReallyPrinting())
+	{
+		if(jobEdgeDetector){
+			stats.lifetimePrintJobs++;
+			jobEdgeDetector = false;
+		}
+	    stats.lifetimePrintSeconds += (double)dtSeconds;
+
+	//if we arent printing, we also have to not be paused for it to truly have no print job
+	} else if(gCodes->GetPauseState() == PauseState::notPaused){
+		jobEdgeDetector = true;
+	}
 	RTOSIface::Yield();
 }
 
+void RepRap::SaveStatistics()
+{
+    constexpr const char* tempFile =
+        "0:/sys/printerstats.tmp";
+
+    constexpr const char* finalFile =
+        "0:/sys/printerstats.json";
+
+    FileStore* file = platform->OpenSysFile(
+        tempFile,
+        OpenMode::write
+    );
+
+    if (file == nullptr)
+    {
+        debugPrintf("Failed to open stats temp file\n");
+        return;
+    }
+
+
+
+    String<512> buffer;
+
+    buffer.printf(
+        "{\n"
+        "  \"lifetimePrintSeconds\": %lu,\n"
+        "  \"lifetimePrintJobs\": %lu,\n"
+    	"  \"xMillis\": %lu,\n"
+		"  \"yMillis\": %lu,\n"
+		"  \"zMillis\": %lu,\n"
+		"  \"bDegs\": %lu,\n"
+		"  \"cDegs\": %lu,\n"
+    	"  \"eMillis\": %lu\n"
+
+        "}\n",
+		(unsigned long)stats.lifetimePrintSeconds,
+		(unsigned long)stats.lifetimePrintJobs,
+		(unsigned long)stats.xMillis,
+		(unsigned long)stats.yMillis,
+		(unsigned long)stats.zMillis,
+		(unsigned long)stats.bDegrees,
+		(unsigned long)stats.cDegrees,
+		(unsigned long)stats.eMillis
+    );
+
+    file->Write(buffer.c_str());
+
+    file->Flush();
+    file->Close();
+
+    if (!MassStorage::Rename(
+            tempFile,
+            finalFile,
+            true,
+            true
+        ))
+    {
+        debugPrintf("Failed to rename stats file\n");
+    }
+}
+
+
+void RepRap::LoadStatistics()
+{
+    constexpr const char* statsFile =
+        "0:/sys/printerstats.json";
+
+    FileStore* file = platform->OpenSysFile(
+        statsFile,
+        OpenMode::read
+    );
+
+    if (file == nullptr)
+    {
+        debugPrintf("No statistics file found\n");
+
+        return;
+    }
+
+    char buffer[256];
+
+    const size_t bytesRead =
+        file->Read(buffer, sizeof(buffer) - 1);
+
+    file->Close();
+
+    if (bytesRead == 0)
+    {
+        debugPrintf("Statistics file empty\n");
+
+        return;
+    }
+
+    buffer[bytesRead] = '\0';
+
+    auto ParseUInt = [&](const char* key) -> uint32_t
+    {
+        char* location = strstr(buffer, key);
+
+        if (location == nullptr)
+        {
+            debugPrintf(
+                "Missing stat key: %s\n",
+                key
+            );
+
+            return 0;
+        }
+
+        location += strlen(key);
+
+        while (*location == ' ' ||
+               *location == '\t')
+        {
+            location++;
+        }
+
+        uint32_t value = 0;
+
+        while (*location >= '0' &&
+               *location <= '9')
+        {
+            value =
+                (value * 10) +
+                (*location - '0');
+
+            location++;
+        }
+
+        return value;
+    };
+
+    stats.lifetimePrintSeconds =
+        (double) ParseUInt("\"lifetimePrintSeconds\":");
+
+    stats.lifetimePrintJobs =
+        ParseUInt("\"lifetimePrintJobs\":");
+
+    stats.xMillis =
+    	(double) ParseUInt("\"xMillis\":");
+
+    stats.yMillis =
+    	(double) ParseUInt("\"yMillis\":");
+
+    stats.zMillis =
+    	(double) ParseUInt("\"zMillis\":");
+
+    stats.bDegrees =
+    	(double) ParseUInt("\"bDegs\":");
+
+    stats.cDegrees =
+    	(double) ParseUInt("\"cDegs\":");
+
+    stats.eMillis =
+    	(double) ParseUInt("\"eMillis\":");
+
+    debugPrintf(
+        "Loaded stats:\n"
+        "  Print Seconds: %lu\n"
+        "  Print Jobs: %lu\n"
+        "  X Millis: %lu\n"
+        "  Y Millis: %lu\n"
+        "  Z Millis: %lu\n"
+        "  B Degrees: %lu\n"
+        "  C Degrees: %lu\n"
+    	"  E Millis: %lu\n",
+
+        (unsigned long)stats.lifetimePrintSeconds,
+        (unsigned long)stats.lifetimePrintJobs,
+
+        (unsigned long)stats.xMillis,
+        (unsigned long)stats.yMillis,
+        (unsigned long)stats.zMillis,
+
+        (unsigned long)stats.bDegrees,
+        (unsigned long)stats.cDegrees,
+		(unsigned long)stats.eMillis
+    );
+}
 // Send diagnostics to the specified destination. This is in a separate function so that the large string doesn't take up main task stack space all the time.
 __attribute__((noinline)) void RepRap::GenerateDeferredDiagnostics(MessageType destination) noexcept
 {
@@ -1002,12 +1282,41 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 			}
 		}
 		break;
+	case 3 + Platform::NumPlatformDiagnosticParts + 13:
+	{
+		reply.lcatf(
+		    "Print statistics:\n"
+		    "  Lifetime print time: %d hours (%.1f days)\n"
+		    "  Lifetime print jobs: %lu\n"
+		    "  X travel: %.3f km\n"
+		    "  Y travel: %.3f km\n"
+		    "  Z travel: %.3f km\n"
+		    "  B rotation: %.3f rotations\n"
+		    "  C rotation: %.3f rotations\n"
+			"  E travel: %.3f km\n",
+
+
+		    (int)reprap.stats.lifetimePrintSeconds / 3600,
+			reprap.stats.lifetimePrintSeconds / 86400,
+
+		    reprap.stats.lifetimePrintJobs,
+
+		    reprap.stats.xMillis / 1000000,
+		    reprap.stats.yMillis / 1000000,
+		    reprap.stats.zMillis / 1000000,
+
+		    reprap.stats.bDegrees / 360,
+		    reprap.stats.cDegrees / 360,
+			reprap.stats.eMillis / 1000000
+		);
+	}
+	break;
 	}
 }
 
 unsigned int RepRap::GetNumberOfDiagnosticParts() const noexcept
 {
-	return 3 + Platform::NumPlatformDiagnosticParts + 13;
+	return 3 + Platform::NumPlatformDiagnosticParts + 14;
 }
 
 // Turn off the heaters, disable the motors, and deactivate the Heat, Move and GCodes classes. Leave everything else working.

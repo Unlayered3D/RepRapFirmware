@@ -180,6 +180,14 @@ public:
 	// Return true if the specified axis is a continuous rotational axis and G0 commands may choose which direction to move it in
 	virtual bool IsContinuousRotationAxis(size_t axis) const noexcept;
 
+	// Return the set of rotary axes for which the move-submission code should apply 180-degree
+	// shortest-path wrapping in USER space (so a target near +180 reached from near -180 takes the
+	// short path). The default is none. This is distinct from IsContinuousRotationAxis(): that drives
+	// the per-motor DDA shortcut (correct only when one motor drives the axis), whereas this performs
+	// the wrap on the user/machine coordinate itself and is suitable for kinematics whose rotary axes
+	// are coupled across multiple motors (e.g. 5-axis CoreXBYC).
+	virtual AxesBitmap GetShortestPathRotaryAxes() const noexcept { return AxesBitmap(); }
+
 	// Return a bitmap of the motors that cause movement of a particular axis or tower.
 	// This is used to determine which motors we need to enable to move a particular axis, and which motors to monitor for stall detect homing.
 	// For example, the first XY move made by a CoreXY machine may be a diagonal move, and it's important to enable the non-moving motor too.
@@ -203,6 +211,10 @@ public:
 	float GetSegmentsPerSecond() const noexcept pre(GetSegmentationType().useSegmentation) { return segmentsPerSecond; }
 	float GetMinSegmentLength() const noexcept pre(GetSegmentationType().useSegmentation) { return minSegmentLength; }
 	float GetReciprocalMinSegmentLength() const noexcept pre(GetSegmentationType().useSegmentation) { return reciprocalMinSegmentLength; }
+
+	// Maximum angular change (degrees) per segment for kinematics that need rotary-driven segmentation.
+	// Returns 0.0 for kinematics that don't (the move-submission code then ignores rotary axes when counting segments).
+	virtual float GetDegreesPerSegment() const noexcept { return 0.0; }
 
 	LogicalDrivesBitmap GetAllDrivesUsed(AxesBitmap axesAndExtruders) const noexcept;
 
@@ -234,6 +246,22 @@ protected:
 	static void PrintVector(const char *_ecv_array s, const double *_ecv_array v, size_t numElems) noexcept;
 
 	static const char *_ecv_array const HomeAllFileName;
+
+protected:
+	// Per-motor limits set via M203.2/M201.2/M205.2 (FLT_MAX = no limit).
+	// The limits are applied by the DDA (DDA::ApplyPerMotorLimits) from the real motor step deltas, so
+	// they correctly account for nonlinear kinematics. Stored here so they are shared by all kinematics types.
+	float motorMaxFeedrates[MaxAxes];
+	float motorMaxAccelerations[MaxAxes];
+	float motorMaxJerks[MaxAxes];
+
+public:
+	void SetMotorMaxFeedrate(size_t motor, float val) noexcept { if (motor < MaxAxes) motorMaxFeedrates[motor] = val; }
+	void SetMotorMaxAcceleration(size_t motor, float val) noexcept { if (motor < MaxAxes) motorMaxAccelerations[motor] = val; }
+	void SetMotorMaxJerk(size_t motor, float val) noexcept { if (motor < MaxAxes) motorMaxJerks[motor] = val; }
+	float GetMotorMaxFeedrate(size_t motor) const noexcept { return (motor < MaxAxes) ? motorMaxFeedrates[motor] : FLT_MAX; }
+	float GetMotorMaxAcceleration(size_t motor) const noexcept { return (motor < MaxAxes) ? motorMaxAccelerations[motor] : FLT_MAX; }
+	float GetMotorMaxJerk(size_t motor) const noexcept { return (motor < MaxAxes) ? motorMaxJerks[motor] : FLT_MAX; }
 
 private:
 	// Default values for those kinematics that always use segmentation

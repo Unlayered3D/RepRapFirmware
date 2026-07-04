@@ -130,6 +130,13 @@ enum class GCodeState : uint8_t
 	loadingFilament,
 	unloadingFilament,
 
+#if SUPPORT_MMU2S
+	// MMU2S direct-command polling (M1750). The MMU filament swap is now driven from the
+	// tool-change macros (tfree/tpre/tpost call M1750), not from a firmware state machine,
+	// so only the M1750 completion-polling state remains here.
+	mmu2sDirect0,				// poll MMU2S for completion of a direct command (M1750)
+#endif
+
 	checkError,						// go to this state after doing a macro when we need to check for a stored error message
 	processingEvent,
 	finishedProcessingEvent,

@@ -333,6 +333,7 @@ NamedEnum(Module, uint8_t,
 			SbcInterface,
 			CAN,					// uppercase to avoid eCv clash with type Can in Microchip driver file
 			Expansion,
+			MMU2S,					// Prusa MMU2S multi-material unit
 			numModules				// this is one greater than the last real module number and also serves as 'none'
 		 );
 

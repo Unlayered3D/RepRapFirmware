@@ -521,6 +521,7 @@ MovementError DDA::InitStandardMove(DDARing& ring, const RawMove &nextMove, bool
 	if (doMotorMapping)
 	{
 		k.LimitSpeedAndAcceleration(*this, normalisedDirectionVector, numVisibleAxes, flags.continuousRotationShortcut);	// give the kinematics the chance to further restrict the speed and acceleration
+		ApplyPerMotorLimits(k);												// apply per-physical-motor limits (M203.2/M201.2/M205.2) using the real motor deltas
 	}
 
 	// 7. Calculate the provisional accelerate and decelerate distances and the top speed
@@ -1453,6 +1454,49 @@ void DDA::LimitSpeedAndAcceleration(float maxSpeed, float maxAllowedAcceleration
 	if (maxDeceleration > maxAllowedAcceleration)
 	{
 		maxDeceleration = maxAllowedAcceleration;
+	}
+}
+
+// Apply per-physical-motor speed/acceleration/jerk limits (M203.2/M201.2/M205.2).
+// We use the ACTUAL motor step delta for this move (endPoint - prev->endPoint) rather than the
+// linear motor-mapping matrix. This is essential for kinematics where a single axis move drives
+// motors that the linear matrix doesn't show - e.g. on 5-axis machines a B/C rotation tilts the
+// tool and couples into the Z motor through the a5/d6 offset rotation. Working from the real motor
+// deltas makes this correct and generic for every kinematics (delta, CoreXY, 5-axis, polar, ...).
+void DDA::ApplyPerMotorLimits(const Kinematics& k) noexcept
+{
+	if (totalDistance <= 0.0)
+	{
+		return;
+	}
+	const Move& move = reprap.GetMove();
+	const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
+	for (size_t motor = 0; motor < numTotalAxes; ++motor)
+	{
+		const float maxV = k.GetMotorMaxFeedrate(motor);
+		const float maxA = k.GetMotorMaxAcceleration(motor);
+		const float maxJ = k.GetMotorMaxJerk(motor);
+		if (maxV == FLT_MAX && maxA == FLT_MAX && maxJ == FLT_MAX)
+		{
+			continue;							// no limit set for this motor
+		}
+
+		const int32_t deltaSteps = endPoint[motor] - prev->endPoint[motor];
+		if (deltaSteps == 0)
+		{
+			continue;							// this motor doesn't move on this segment
+		}
+
+		// fraction = motor mm moved per mm (or degree) of commanded move travel
+		const float fraction = fabsf((float)deltaSteps / move.DriveStepsPerMm(motor)) / totalDistance;
+		if (fraction <= 0.0)
+		{
+			continue;
+		}
+
+		if (maxV != FLT_MAX) { LimitSpeedAndAcceleration(maxV / fraction, FLT_MAX); }
+		if (maxA != FLT_MAX) { LimitSpeedAndAcceleration(FLT_MAX, maxA / fraction); }
+		if (maxJ != FLT_MAX) { LimitSpeedAndAcceleration(maxJ / fraction, FLT_MAX); }
 	}
 }
 

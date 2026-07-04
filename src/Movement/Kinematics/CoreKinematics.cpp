@@ -418,6 +418,7 @@ void CoreKinematics::LimitSpeedAndAcceleration(DDA& dda, const float *_ecv_array
 			dda.LimitSpeedAndAcceleration(reprap.GetMove().MaxFeedrate(motor)/mm, reprap.GetMove().NormalAcceleration(motor)/mm);
 		}
 	}
+	// Per-physical-motor limits (M203.2/M201.2/M205.2) are applied by the DDA from the real motor step deltas.
 }
 
 // Return a bitmap of the motors that are involved in homing a particular axis or tower. Used for implementing stall detection endstops.

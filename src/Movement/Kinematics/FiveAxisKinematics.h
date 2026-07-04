@@ -40,10 +40,12 @@ public:
 			const float *_ecv_array normalisedDirectionVector,
 			size_t numVisibleAxes,
 			bool continuousRotationShortcut) const noexcept override;
+	AxesBitmap GetShortestPathRotaryAxes() const noexcept override;
 	LogicalDrivesBitmap GetControllingDrives(size_t axis,
 			bool forHoming) const noexcept override;
 	void ConvertAxisAmountsToLogicalDriveAmounts(float amounts[MaxAxes],
 			size_t numVisibleAxes, size_t numTotalAxes) const noexcept override;
+	float GetDegreesPerSegment() const noexcept override { return degreesPerSegment; }
 
 protected:DECLARE_OBJECT_MODEL_WITH_ARRAYS
 
@@ -68,7 +70,8 @@ private:
 	uint8_t firstAxis[MaxAxes], lastAxis[MaxAxes];// first and last axis that each motor controls
 
 	bool modified;							// true if matrix has been altered
-	float a5, d6;
+	float a5, d6, bRatio, cRatio, xSkew, ySkew, xzSkew, yzSkew, xySkew, bSkew;
+	float degreesPerSegment;				// max angular change per segment (deg); 0 disables rotary-driven segmentation
 };
 
 #endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */

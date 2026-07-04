@@ -21,6 +21,7 @@ Licence: GPL
 #ifndef REPRAP_H
 #define REPRAP_H
 
+#include "PrinterStatistics.h"
 #include <RepRapFirmware.h>
 #include <ObjectModel/ObjectModel.h>
 #include <RTOSIface/RTOSIface.h>
@@ -175,6 +176,15 @@ public:
 	static void StartJsonResponse(const GCodeBuffer *_ecv_null gb, OutputBuffer *outbuf) noexcept;
 
 	static constexpr uint16_t DefaultDebugFlags = 0x00FF;
+
+ 	PrinterStatistics stats = {};
+
+    void SaveStatistics();
+    void LoadStatistics();
+
+    uint32_t lastStatsSaveMs = 0;
+	uint32_t saveIntervalMs = 60000; // 1 min
+
 
 protected:
 	DECLARE_OBJECT_MODEL_WITH_ARRAYS

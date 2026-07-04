@@ -28,59 +28,214 @@
 #define OBJECT_MODEL_ARRAY_VALUE(...)			OBJECT_MODEL_ARRAY_VALUE_BODY(FiveAxisKinematics, __VA_ARGS__)
 
 constexpr ObjectModelArrayTableEntry FiveAxisKinematics::objectModelArrayTable[] =
-{
-		// 20. Forward matrix elements in a row
 		{
-				nullptr,					// no lock needed
-				OBJECT_MODEL_ARRAY_COUNT_NOSELF(
-						reprap.GetGCodes().GetTotalAxes()),
+		// 20. Forward matrix elements in a row
+				{
+						nullptr,					// no lock needed
+						OBJECT_MODEL_ARRAY_COUNT_NOSELF(
+								reprap.GetGCodes().GetTotalAxes()),
 						OBJECT_MODEL_ARRAY_VALUE(
 								self->forwardMatrix(context.GetIndex(1),
 										context.GetLastIndex()), 3) },
-										// 21. Inverse matrix elements in a row
-										{
-												nullptr,					// no lock needed
-												OBJECT_MODEL_ARRAY_COUNT_NOSELF(
-														reprap.GetGCodes().GetVisibleAxes()),
-														OBJECT_MODEL_ARRAY_VALUE(
-																self->inverseMatrix(context.GetIndex(1),
-																		context.GetLastIndex()), 3) },
-																		// 22. Forward matrix rows
-																		{
-																				nullptr,					// no lock needed
-																				OBJECT_MODEL_ARRAY_COUNT_NOSELF(
-																						reprap.GetGCodes().GetVisibleAxes()),
-																						OBJECT_MODEL_ARRAY_VALUE(self,
-																								20 | (context.GetLastIndex() << 8), true) },
-																								// 23. Inverse matrix rows
-																								{
-																										nullptr,					// no lock needed
-																										OBJECT_MODEL_ARRAY_COUNT_NOSELF(
-																												reprap.GetGCodes().GetTotalAxes()),
-																												OBJECT_MODEL_ARRAY_VALUE(self,
-																														21 | (context.GetLastIndex() << 8), true) } };
+				// 21. Inverse matrix elements in a row
+				{
+						nullptr,					// no lock needed
+						OBJECT_MODEL_ARRAY_COUNT_NOSELF(
+								reprap.GetGCodes().GetVisibleAxes()),
+						OBJECT_MODEL_ARRAY_VALUE(
+								self->inverseMatrix(context.GetIndex(1),
+										context.GetLastIndex()), 3) },
+				// 22. Forward matrix rows
+				{
+						nullptr,					// no lock needed
+						OBJECT_MODEL_ARRAY_COUNT_NOSELF(
+								reprap.GetGCodes().GetVisibleAxes()),
+						OBJECT_MODEL_ARRAY_VALUE(self,
+								20 | (context.GetLastIndex() << 8), true) },
+				// 23. Inverse matrix rows
+				{
+						nullptr,					// no lock needed
+						OBJECT_MODEL_ARRAY_COUNT_NOSELF(
+								reprap.GetGCodes().GetTotalAxes()),
+						OBJECT_MODEL_ARRAY_VALUE(self,
+								21 | (context.GetLastIndex() << 8), true) } };
 
 DEFINE_GET_OBJECT_MODEL_ARRAY_TABLE_WITH_PARENT(FiveAxisKinematics,
 		ZLeadscrewKinematics, 20)
 
 constexpr ObjectModelTableEntry FiveAxisKinematics::objectModelTable[] = {
-		// Within each group, these entries must be in alphabetical order
-		// 0. kinematics members
+// Within each group, these entries must be in alphabetical order
+// 0. kinematics members
 		{ "forwardMatrix", OBJECT_MODEL_FUNC_ARRAY(22),
 				ObjectModelEntryFlags::none }, { "inverseMatrix",
-						OBJECT_MODEL_FUNC_ARRAY(23), ObjectModelEntryFlags::none }, {
-								"name", OBJECT_MODEL_FUNC(self->GetName(true)),
-								ObjectModelEntryFlags::none }, };
+				OBJECT_MODEL_FUNC_ARRAY(23), ObjectModelEntryFlags::none }, {
+				"name", OBJECT_MODEL_FUNC(self->GetName(true)),
+				ObjectModelEntryFlags::none }, };
 
 constexpr uint8_t FiveAxisKinematics::objectModelTableDescriptor[] = { 1, 3 };
 
 DEFINE_GET_OBJECT_MODEL_TABLE_WITH_PARENT(FiveAxisKinematics,
 		ZLeadscrewKinematics)
+const static uint8_t COS_ID = 2, SIN_ID = 3, N_COS_ID = 4, N_SIN_ID = 5;
 
 // Recalculate internal variables following a configuration change
 void FiveAxisKinematics::Recalc() noexcept {
 	// Calculate the forward differential matrix by inverting the inverse differential matrix
 	{
+		//update the matrix with new values
+		switch (GetKinematicsType()) {
+		case KinematicsType::cartesian:
+		default:
+			break;
+			//TODO decide which one of these to use
+		case KinematicsType::coreXBYC:
+			//DIFFERENTIAL MATRIX
+			//This matrix maps motor drivers to each axis
+			/*   0    1     2  3   4
+			 * x 1    0     0  1   0
+			 * y 0    1     0  0   1
+			 * z 0    0     1  0   0
+			 * b -1/3 0     0  1/3 0
+			 * c 0    11/18 0  0   -11/18
+			 */
+
+			inverseMatrix(0, 3) = 1.0;
+			inverseMatrix(1, 4) = 1.0;
+
+			//40 cm per 20t pulley rotation, 360 degrees a rotation
+			inverseMatrix(3, 0) = 4.0 * bRatio / 36.0;
+			inverseMatrix(3, 3) = -4.0 * bRatio / 36.0;
+			inverseMatrix(4, 1) = -4.0 * cRatio / 36.0;
+			inverseMatrix(4, 4) = -4.0 * cRatio / 36.0;
+
+
+			//
+			// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
+			// Its technically a householder reflection
+			//
+
+			/*
+			 * 	x  y  z  b  c
+			 *  c  s  0  0  0
+			 *  s -c  0  0  0
+			 *  0  0  1  0  0
+			 *  0  0  0  1  0
+			 *  0  0  0  0  1
+			 */
+			rotationMatrix1(0, 0) = COS_ID;
+			rotationMatrix1(0, 1) = SIN_ID;
+			rotationMatrix1(1, 0) = SIN_ID;
+			rotationMatrix1(1, 1) = N_COS_ID;
+
+			//
+			// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
+			// Its technically a householder reflection
+			//
+
+			/* stedmans matrix also now applies a cross axis skew to Y based on new constant
+			 *  a5 sd d6
+			 *  c   0   s
+			 *  0   0   0
+			 *  s   0  -c
+			 *  0   0   0
+			 *  0   0   0
+			 */
+			rotationMatrix2(0, 0) = SIN_ID;
+			rotationMatrix2(0, 2) = COS_ID;
+			//rotationMatrix2(1,1) = SIN_ID;
+			rotationMatrix2(2, 0) = N_COS_ID;
+			rotationMatrix2(2, 2) = SIN_ID;
+			break;
+			//for the new kinematics
+		case KinematicsType::coreXBYC2:
+		case KinematicsType::coreXBYC3:
+			//DIFFERENTIAL MATRIX
+			//This matrix maps motor drivers to each axis
+			/*   0    1     2    3    4
+			 * x 1   -xys   xs  -1    xys
+			 * y 0   -1     ys   0    1
+			 * z xzs  yzs   1   -xzs -yzs
+			 * b -1/3 0     0    1/3  0
+			 * c 0   -11/18 0    0    -11/18
+			 */
+			inverseMatrix(0, 0) = 1.0;
+			inverseMatrix(0, 3) = -1.0;
+			inverseMatrix(1, 1) = -1.0;
+			inverseMatrix(2, 2) = 1.0;
+
+			inverseMatrix(1, 4) = 1.0;
+
+			//40 cm per 20t pulley rotation, 360 degrees a rotation
+
+			inverseMatrix(3, 0) = -4.0 * bRatio / 36.0;
+			inverseMatrix(3, 3) = -4.0 * bRatio / 36.0;
+			inverseMatrix(4, 1) = -4.0 * cRatio / 36.0;
+			inverseMatrix(4, 4) = -4.0 * cRatio / 36.0;
+
+			//ok if we want to add x and y skew using small angle approximation, it is not hard just not perfect.
+			//it operates in joint coordinates so it is the above matrix
+			// basically when X or Y is commanded, it needs to move z
+			//bed skew should be handled with mesh bed leveling.
+
+			inverseMatrix(0, 2) = xSkew; //for every mm the x axis travels, change z by this amount
+
+
+			inverseMatrix(1, 2) = ySkew; //for every mm the y axis travels, change z by this amount
+
+			inverseMatrix(2, 0) = xzSkew;
+			inverseMatrix(2, 3) = -xzSkew;
+
+			inverseMatrix(2, 1) = yzSkew;
+			inverseMatrix(2, 4) = -yzSkew;
+
+			inverseMatrix(0, 1) = -xySkew;
+			inverseMatrix(0, 4) = xySkew;
+
+			//skew of the x axis being
+
+			//also i might want to offset y as a function of angle but that was buggy
+
+
+			//
+			// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
+			// Its technically a householder reflection
+			//
+
+			/*
+			 * 	x  y  z  b  c
+			 *  c  s  0  0  0
+			 *  s  c  0  0  0
+			 *  0  0  1  0  0
+			 *  0  0  0  1  0
+			 *  0  0  0  0  1
+			 */
+			rotationMatrix1(0, 0) = COS_ID;
+			rotationMatrix1(0, 1) = SIN_ID;
+			rotationMatrix1(1, 0) = N_SIN_ID;
+			rotationMatrix1(1, 1) = COS_ID;
+
+			//
+			// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
+			//
+			//
+
+			/* stedmans matrix also now applies a cross axis skew to Y based on new constant
+			 *   a5 sd d6
+			 * x -s   0   c
+			 * y  0   c   0
+			 * z -c   0  -s
+			 * b  0   0   0
+			 * c  0   0   0
+			 */
+			rotationMatrix2(0, 0) = N_SIN_ID;
+			rotationMatrix2(0, 2) = COS_ID;
+			rotationMatrix2(1,1) = COS_ID;
+			rotationMatrix2(2, 0) = N_COS_ID;
+			rotationMatrix2(2, 2) = N_SIN_ID;
+
+			break;
+		}
+
 		// Set up a double-width matrix with the inverse matrix in the left half and a unit diagonal matrix in the right half
 		FixedMatrix<float, MaxAxes, 2 * MaxAxes> tempMatrix;
 		for (size_t i = 0; i < MaxAxes; ++i) {
@@ -109,9 +264,6 @@ void FiveAxisKinematics::Recalc() noexcept {
 					"Invalid kinematics matrix\n");
 		}
 
-
-
-
 	}
 
 	// Calculate the first and last motors for each axis, and first and last axis controlled by each motor.
@@ -127,7 +279,7 @@ void FiveAxisKinematics::Recalc() noexcept {
 	for (size_t axis = 0; axis < MaxAxes; ++axis) {
 		for (size_t motor = 0; motor < MaxAxes; ++motor) {
 			if (inverseMatrix(axis, motor) != 0.0)// if this axis needs this motor driven
-			{
+					{
 				if (axis < firstAxis[motor]) {
 					firstAxis[motor] = axis;
 				}
@@ -138,7 +290,7 @@ void FiveAxisKinematics::Recalc() noexcept {
 			}
 
 			if (forwardMatrix(motor, axis) != 0.0)// if this motor affects this axes
-			{
+					{
 				if (motor < firstMotor[axis]) {
 					firstMotor[axis] = motor;
 				}
@@ -173,9 +325,9 @@ void FiveAxisKinematics::Recalc() noexcept {
 inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 	return controllingDrivers[axis] != LogicalDrivesBitmap::MakeFromBits(axis);
 }
-const static uint8_t COS_ID = 2, SIN_ID = 3, N_COS_ID = 4, N_SIN_ID = 5;
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-										ZLeadscrewKinematics(k), a5(2.5f), d6(46.4f), modified(false) {
+		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
+				5.5f), xSkew(0.0f), ySkew(0.0f), xzSkew(0.0f), yzSkew(0.0f), xySkew(0.0f), bSkew(0.0f), degreesPerSegment(2.0f), modified(false) {
 
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
 	inverseMatrix.Fill(0.0);
@@ -183,134 +335,9 @@ FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 	rotationMatrix2.Fill(0);
 	for (size_t i = 0; i < MaxAxes; ++i) {
 		inverseMatrix(i, i) = 1.0;
-		rotationMatrix1(i,i) = 1;
+		rotationMatrix1(i, i) = 1;
 	}
-
-	switch (k) {
-	case KinematicsType::cartesian:
-	default:
-		break;
-		//TODO decide which one of these to use
-	case KinematicsType::coreXBYC:
-		//DIFFERENTIAL MATRIX
-			//This matrix maps motor drivers to each axis
-			/*   0    1     2  3   4
-			 * x 1    0     0  1   0
-			 * y 0    1     0  0   1
-			 * z 0    0     1  0   0
-			 * b -1/3 0     0  1/3 0
-			 * c 0    11/18 0  0   -11/18
-			 */
-
-			inverseMatrix(0, 3) = 1.0;
-			inverseMatrix(1, 4) = 1.0;
-
-			inverseMatrix(3, 0) = 1.0 / 3.0;
-			inverseMatrix(3, 3) = -1.0 / 3.0;
-			inverseMatrix(4, 1) = 22.0 / 36.0;
-			inverseMatrix(4, 4) = -22.0 / 36.0;
-
-			//
-			// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
-			// Its technically a householder reflection
-			//
-
-			/*
-			 * 	x  y  z  b  c
-			 *  c  s  0  0  0
-			 *  s -c  0  0  0
-			 *  0  0  1  0  0
-			 *  0  0  0  1  0
-			 *  0  0  0  0  1
-			 */
-			rotationMatrix1(0,0) = COS_ID;
-			rotationMatrix1(0,1) = SIN_ID;
-			rotationMatrix1(1,0) = SIN_ID;
-			rotationMatrix1(1,1) = N_COS_ID;
-
-
-			//
-			// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
-			// Its technically a householder reflection
-			//
-
-			/* stedmans matrix also now applies a cross axis skew to Y based on new constant
-			 *  a5 sd d6
-			 *  c   0   s
-			 *  0   0   0
-			 *  s   0  -c
-			 *  0   0   0
-			 *  0   0   0
-			 */
-			rotationMatrix2(0,0) = SIN_ID;
-			rotationMatrix2(0,2) = COS_ID;
-			//rotationMatrix2(1,1) = SIN_ID;
-			rotationMatrix2(2,0) = N_COS_ID;
-			rotationMatrix2(2,2) = SIN_ID;
-		break;
-		//for the new kinematics
-	case KinematicsType::coreXBYC2:
-	case KinematicsType::coreXBYC3:
-		//DIFFERENTIAL MATRIX
-		//This matrix maps motor drivers to each axis
-		/*   0    1     2  3   4
-		 * x 1    0     0 -1   0
-		 * y 0   -1     0  0   1
-		 * z 0    0     1  0   0
-		 * b -1/3 0     0  1/3 0
-		 * c 0   -11/18 0  0   -11/18
-		 */
-
-		inverseMatrix(0, 3) = -1.0;
-		inverseMatrix(1, 1) = -1.0;
-		inverseMatrix(1, 4) = 1.0;
-
-		inverseMatrix(3, 0) = -1.0 / 3.0;
-		inverseMatrix(3, 3) = -1.0 / 3.0;
-		inverseMatrix(4, 1) = -22.0 / 36.0;
-		inverseMatrix(4, 4) = -22.0 / 36.0;
-
-		//
-		// This matrix deals with rotations about the C axis by rotating X and Y (d2 & d4)
-		// Its technically a householder reflection
-		//
-
-		/*
-		 * 	x  y  z  b  c
-		 *  c  s  0  0  0
-		 *  s  c  0  0  0
-		 *  0  0  1  0  0
-		 *  0  0  0  1  0
-		 *  0  0  0  0  1
-		 */
-		rotationMatrix1(0,0) = COS_ID;
-		rotationMatrix1(0,1) = SIN_ID;
-		rotationMatrix1(1,0) = N_SIN_ID;
-		rotationMatrix1(1,1) = COS_ID;
-
-
-		//
-		// This matrix deals with rotations about the B axis by rotating X and Z (d2 & d4)
-		//
-		//
-
-		/* stedmans matrix also now applies a cross axis skew to Y based on new constant
-		 *   a5 sd d6
-		 * x -s   0   c
-		 * y  0   0   0
-		 * z -c   0  -s
-		 * b  0   0   0
-		 * c  0   0   0
-		 */
-		rotationMatrix2(0,0) = N_SIN_ID;
-		rotationMatrix2(0,2) = COS_ID;
-		//rotationMatrix2(1,1) = SIN_ID;
-		rotationMatrix2(2,0) = N_COS_ID;
-		rotationMatrix2(2,2) = N_SIN_ID;
-
-		break;
-	}
-
+	//moved kinematics logic from here to recalc since new parameters
 	Recalc();
 }
 
@@ -340,7 +367,7 @@ const char* _ecv_array FiveAxisKinematics::GetName(
 // This function is used for CoreXY and CoreXZ kinematics, but it overridden for CoreXYU kinematics
 bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 		const StringRef &reply, bool &error) THROWS(GCodeException)
-										{
+		{
 	if (mCode != 669) {
 		return ZLeadscrewKinematics::Configure(mCode, gb, reply, error);
 	}
@@ -372,13 +399,24 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	const bool seenSeg = TryConfigureSegmentation(gb);// configure optional segmentation
 	gb.TryGetFValue('A', a5, seen);
 	gb.TryGetFValue('D', d6, seen);
+	gb.TryGetFValue('R', bRatio, seen);
+	gb.TryGetFValue('Q', cRatio, seen);
+	gb.TryGetFValue('X', xSkew, seen);
+	gb.TryGetFValue('Y', ySkew, seen);
+	gb.TryGetFValue('U', xzSkew, seen);
+	gb.TryGetFValue('V', yzSkew, seen);
+	gb.TryGetFValue('W', xySkew, seen);
+	gb.TryGetFValue('B', bSkew, seen);
+	gb.TryGetFValue('P', degreesPerSegment, seen);	// max angular change per segment (deg); 0 disables rotary-driven segmentation
+
 	//gb.TryGetFValue('S', s6, seen);
-	reply.printf("A is now %.2f, D is now %.2f", (double)a5, (double)d6);
+	reply.printf("A is now %.2f, D is now %.2f, (R) B Ratio is now %.2f, (Q) C Ratio is now %.2f, X Skew is now %.4f, Y Skew is now %.4f, XZ (U) Skew is now %.4f, YZ (V) Skew is now %.4f, XY (W) Skew is now %.4f, B Skew is now %.2f, (P) deg/segment is now %.2f", (double) a5, (double) d6, (double) bRatio, (double) cRatio, (double)xSkew, (double)ySkew, (double)xzSkew, (double)yzSkew, (double)xySkew, (double)bSkew, (double)degreesPerSegment);
 
 	if (seen) {
 		Recalc();
 	} else if (!seenSeg) {
 		Kinematics::Configure(mCode, gb, reply, error);
+		reply.catf(", %.2f deg/segment (P)", (double) degreesPerSegment);
 		reply.catf(", %smatrix:", ((modified) ? "modified " : ""));
 		const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();
 		const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
@@ -389,17 +427,18 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 				if (val == 0.0) {
 					reply.cat('0');	// don't print unnecessary decimals, we will probably reach the response buffer limit if we do
 				} else {
-					reply.catf("%.2f", (double) val);
+					reply.catf("%.4f", (double) val);
 				}
 			}
 		}
 	}
 
 	return seen;
-										}
+}
 
-float FiveAxisKinematics::getRotationMatrixValue(uint8_t num, float cosN, float sinN)  const noexcept {
-	switch(num){
+float FiveAxisKinematics::getRotationMatrixValue(uint8_t num, float cosN,
+		float sinN) const noexcept {
+	switch (num) {
 	case 1:
 		return 1.0;
 	case COS_ID:
@@ -420,7 +459,6 @@ float FiveAxisKinematics::getRotationMatrixValue(uint8_t num, float cosN, float 
 // Convert Cartesian coordinates to motor coordinates returning true if successful.
 // This is called frequently, so try to keep it efficient.
 // If a motor has no visible axes that affect it, leave the old motor coordinate unchanged.
-float pastC = 0.0f;
 MovementError FiveAxisKinematics::CartesianToMotorSteps(
 		const float machinePos[], const float stepsPerMm[],
 		size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[],
@@ -429,36 +467,36 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 	//TODO apply inverse kinematics
 
 	//initialize the machine pos
-	float rotatedMachinePos[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+	float rotatedMachinePos[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = cos(M_PI/180.0*machinePos[3]);
-	float sinT5 = sin(M_PI/180.0*machinePos[3]);
-	float cosT1 = cos(M_PI/180.0*machinePos[4]);
-	float sinT1 = sin(M_PI/180.0*machinePos[4]);
+	float cosT5 = cos(M_PI / 180.0 * machinePos[3]);
+	float sinT5 = sin(M_PI / 180.0 * machinePos[3]);
+	float cosT1 = cos(M_PI / 180.0 * machinePos[4]);
+	float sinT1 = sin(M_PI / 180.0 * machinePos[4]);
 
 	//iterate over the axes to calculate real values
-	for(size_t i = 0; i < numTotalAxes; ++i){
+	for (size_t i = 0; i < numTotalAxes; ++i) {
 
-		for(size_t j = 0; j < numTotalAxes; ++j){
+		for (size_t j = 0; j < numTotalAxes; ++j) {
 
 			//run the bed rotation logic in this case. This translation is only applied to x and y in our case.
-			rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix1(i,j), cosT1, sinT1)*machinePos[j];
+			rotatedMachinePos[i] += getRotationMatrixValue(
+					rotationMatrix1(i, j), cosT1, sinT1) * machinePos[j];
 
 		}
 
 		//now we offset the X and Z based on the angle of the nozzle. It is also noted that the a5 and d6 offsets are subtracted out with the cos-1.
 		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
 
-		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
-		//rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
-		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i, 0),
+				cosT5 - 1, sinT5) * a5;
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*bSkew;
+		rotatedMachinePos[i] += getRotationMatrixValue(rotationMatrix2(i, 2),
+				cosT5 - 1, sinT5) * d6;
 
 //
 	}
-
-
-
 
 	for (size_t motor = 0; motor < numTotalAxes; ++motor) {
 		const size_t axisLimit = min<size_t>(numVisibleAxes,
@@ -466,10 +504,12 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 		size_t axis = firstAxis[motor];
 		if (axis < axisLimit) {
 			//we multiply the new rotated machine pos to the inverse matrix to get the differential.
-			float movement = inverseMatrix(axis, motor) * rotatedMachinePos[axis];
+			float movement = inverseMatrix(axis, motor)
+					* rotatedMachinePos[axis];
 			++axis;
 			while (axis < axisLimit) {
-				movement += inverseMatrix(axis, motor) * rotatedMachinePos[axis];
+				movement += inverseMatrix(axis, motor)
+						* rotatedMachinePos[axis];
 				++axis;
 			}
 			RoundToInt32(rslt, movement * stepsPerMm[motor], motorPos[motor]);
@@ -485,7 +525,7 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 		const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes,
 		float machinePos[]) const noexcept {
-	float rotatedPosition[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+	float rotatedPosition[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 
 	// If there are more motors than visible axes (e.g. CoreXYU which has a V motor), we assume that we can ignore the trailing ones when calculating the machine position
 	for (size_t axis = 0; axis < numTotalAxes; ++axis) {
@@ -496,7 +536,7 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 			const float factor = forwardMatrix(motor, axis);
 			if (factor != 0.0) {
 				rotatedPosition[axis] += factor * (float) motorPos[motor]
-																   / stepsPerMm[motor];
+						/ stepsPerMm[motor];
 			}
 		}
 	}
@@ -504,32 +544,32 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 	//we now have our rotated position, but we cant get ahead of ourelves and set the machine pos. We have to undo the rotations. :(
 	//first thing is to figure out what the rotations actually are. The rotations "rotated" doesnt mean anything...
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = cos(M_PI/180.0*rotatedPosition[3]);
-	float sinT5 = sin(M_PI/180.0*rotatedPosition[3]);
-	float cosT1 = cos(M_PI/180.0*rotatedPosition[4]);
-	float sinT1 = sin(M_PI/180.0*rotatedPosition[4]);
+	float cosT5 = cos(M_PI / 180.0 * rotatedPosition[3]);
+	float sinT5 = sin(M_PI / 180.0 * rotatedPosition[3]);
+	float cosT1 = cos(M_PI / 180.0 * rotatedPosition[4]);
+	float sinT1 = sin(M_PI / 180.0 * rotatedPosition[4]);
 
 	//Rotation matricies are orthagonal. R^-1 = R^T
 	//this is great since our matrices are not square lol :skull:
 	//iterate over the positions to calculate real values
-	for(size_t i = 0; i < numTotalAxes; ++i){
+	for (size_t i = 0; i < numTotalAxes; ++i) {
 
 		//now we offset the X and Z based on the angle of the nozzle. It is also noted that the a5 and d6 offsets are subtracted out with the cos-1.
 		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
 		//note the negative sign. This does not need an inverse since this is calculated off of rotations and simply applies a cartesian offset
-		machinePos[i] = -getRotationMatrixValue(rotationMatrix2(i,0), cosT5-1, sinT5)*a5;
-		//machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,1), cosT5-1, sinT5)*s6;
-		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i,2), cosT5-1, sinT5)*d6;
+		machinePos[i] = -getRotationMatrixValue(rotationMatrix2(i, 0),
+				cosT5 - 1, sinT5) * a5;
+		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i, 1), cosT5-1, sinT5) * bSkew;
+		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i, 2),
+				cosT5 - 1, sinT5) * d6;
 
-
-		for(size_t j = 0; j < numTotalAxes; ++j){
+		for (size_t j = 0; j < numTotalAxes; ++j) {
 
 			//notice how j and i are flipped here. This is the same as the transpose
-			machinePos[i] += getRotationMatrixValue(rotationMatrix1(j,i), cosT1, sinT1)*rotatedPosition[j];
+			machinePos[i] += getRotationMatrixValue(rotationMatrix1(j, i),
+					cosT1, sinT1) * rotatedPosition[j];
 
 		}
-
-
 
 	}
 
@@ -542,34 +582,39 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 void FiveAxisKinematics::LimitSpeedAndAcceleration(DDA &dda,
 		const float *_ecv_array normalisedDirectionVector,
 		size_t numVisibleAxes, bool continuousRotationShortcut) const noexcept {
-	// For each shared motor, calculate how much of the total move it contributes
-	float motorMovements[MaxAxes];
-	for (float &mm : motorMovements) {
-		mm = 0.0;
-	}
-
+	// For each axis with shared motors, apply that axis's own feedrate limit to each motor's
+	// contribution from that axis. Using MaxFeedrate(motor) instead would incorrectly apply
+	// e.g. B's M203 limit (in deg/s) to motor 3 when X is moving, since motor 3 is indexed as B.
 	for (size_t axis = 0; axis < numVisibleAxes; ++axis) {
-		if (HasSharedMotor(axis)) {
-			const float dv = normalisedDirectionVector[axis];
-			if (dv != 0.0) {
-				for (size_t motor = 0; motor < MaxAxes; ++motor) {
-					const float factor = inverseMatrix(axis, motor);
-					if (factor != 0.0) {
-						motorMovements[motor] += factor * dv;
-					}
-				}
+		if (!HasSharedMotor(axis)) { continue; }
+
+		const float dv = fabsf(normalisedDirectionVector[axis]);
+		if (dv == 0.0) { continue; }
+
+		for (size_t motor = 0; motor < MaxAxes; ++motor) {
+			const float factor = fabsf(inverseMatrix(axis, motor));
+			if (factor != 0.0) {
+				const float mm = factor * dv;
+				dda.LimitSpeedAndAcceleration(
+						reprap.GetMove().MaxFeedrate(axis) / mm,
+						reprap.GetMove().NormalAcceleration(axis) / mm);
 			}
 		}
 	}
+	// Per-physical-motor limits (M203.2/M201.2/M205.2) are applied by the DDA from the real motor
+	// step deltas, so they correctly account for the nonlinear B/C rotation coupling.
+}
 
-	for (size_t motor = 0; motor < MaxAxes; ++motor) {
-		const float mm = fabsf(motorMovements[motor]);
-		if (mm != 0.0) {
-			dda.LimitSpeedAndAcceleration(
-					reprap.GetMove().MaxFeedrate(motor) / mm,
-					reprap.GetMove().NormalAcceleration(motor) / mm);
-		}
-	}
+// Return the set of rotary axes that should take the 180-degree shortest path across the
+// +/-180 wrap boundary. For this machine that is the continuous-rotation C turntable (axis 4).
+// The wrap itself is applied in user space by the GCodes move setup (see GCodes::DoStraightMove)
+// so that the user and machine coordinate frames stay consistent; doing it here in LimitPosition
+// (machine frame only) caused the frames to diverge and produced phantom multi-turn moves -> OOM.
+// NOTE: this is deliberately NOT IsContinuousRotationAxis(), because that would enable the
+// per-motor DDA shortcut, which is wrong for this kinematic (B and C are coupled across motors).
+AxesBitmap FiveAxisKinematics::GetShortestPathRotaryAxes() const noexcept {
+	constexpr size_t CAxisIndex = 4;		// the continuous-rotation turntable axis
+	return AxesBitmap::MakeFromBits(CAxisIndex);
 }
 
 // Return a bitmap of the motors that are involved in homing a particular axis or tower. Used for implementing stall detection endstops.

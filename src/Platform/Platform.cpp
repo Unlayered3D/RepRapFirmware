@@ -2104,14 +2104,17 @@ void Platform::AppendUsbReply(const GCodeBuffer *_ecv_null gb, OutputBuffer *buf
 // Translation of M575 S parameter to AuxMode
 static constexpr AuxMode auxModes[] =
 {
-	AuxMode::panelDue,			// basic PanelDue mode,
-	AuxMode::panelDue,			// PanelDue mode with CRC or checksum required (default)
-	AuxMode::raw,				// basic raw mode
-	AuxMode::raw,				// raw mode with CRC or checksum required
-	AuxMode::panelDue,			// PanelDue mode with CRC required
-	AuxMode::disabled,			// was unused, now treated as disabled
-	AuxMode::raw,				// raw mode with CRC required
-	AuxMode::device,			// Modbus/Uart mode
+	AuxMode::panelDue,			// S0: basic PanelDue mode
+	AuxMode::panelDue,			// S1: PanelDue mode with CRC or checksum required (default)
+	AuxMode::raw,				// S2: basic raw mode
+	AuxMode::raw,				// S3: raw mode with CRC or checksum required
+	AuxMode::panelDue,			// S4: PanelDue mode with CRC required
+	AuxMode::disabled,			// S5: was unused, now treated as disabled
+	AuxMode::raw,				// S6: raw mode with CRC required
+	AuxMode::device,			// S7: Modbus/Uart mode
+#if SUPPORT_MMU2S
+	AuxMode::mmu2s,				// S8: Prusa MMU2S mode
+#endif
 };
 
 // Return the mode of this serial channel (raw, panelDue, device, disabled)
@@ -2140,6 +2143,17 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 	{
 		const uint32_t val = gb.GetLimitedUIValue('S', ARRAY_SIZE(auxModes));
 		const AuxMode newMode = auxModes[val];
+#if SUPPORT_MMU2S
+		if (newMode == AuxMode::mmu2s)
+		{
+			if (chan == 0)
+			{
+				reply.copy("MMU2S mode not supported on this port");
+				return GCodeResult::error;
+			}
+		}
+		else
+#endif
 		if (newMode == AuxMode::device)
 		{
 			// Don't allow device mode if it is not supported on this port
@@ -2200,6 +2214,9 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 		if (   gbp != nullptr
 			&& newMode != AuxMode::disabled
 			&& newMode != AuxMode::device
+#if SUPPORT_MMU2S
+			&& newMode != AuxMode::mmu2s
+#endif
 		   )
 		{
 			gbp->Enable(val);						// enable I/O and set the CRC and checksum requirements
@@ -2235,7 +2252,11 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 			const char *_ecv_array crcMode = (cp & 4) ? "requires CRC"
 									: (cp & 1) ? "requires checksum or CRC"
 										: "does not require checksum or CRC";
-			const char *_ecv_array modeString = (mode == AuxMode::device) ? "Device or Modbus RTU"
+			const char *_ecv_array modeString =
+#if SUPPORT_MMU2S
+												(mode == AuxMode::mmu2s) ? "MMU2S" :
+#endif
+												(mode == AuxMode::device) ? "Device or Modbus RTU"
 												: (IsChanRaw(chan)) ? "raw"
 													: "PanelDue";
 #if HAS_AUX_DEVICES

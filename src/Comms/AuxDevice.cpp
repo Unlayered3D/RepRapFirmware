@@ -12,6 +12,9 @@
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
 #include <AsyncSerial.h>
+#if SUPPORT_MMU2S
+# include "MMU2S/MMU2S.h"
+#endif
 
 AuxDevice::AuxDevice() noexcept : uart(nullptr), seq(0), mode(AuxMode::disabled)
 {
@@ -35,8 +38,22 @@ void AuxDevice::SetMode(AuxMode p_mode) noexcept
 	{
 		if (p_mode == AuxMode::disabled)
 		{
+#if SUPPORT_MMU2S
+			if (mode == AuxMode::mmu2s)
+			{
+				MMU2S::Disable();
+			}
+#endif
 			Disable();
 		}
+#if SUPPORT_MMU2S
+		else if (p_mode == AuxMode::mmu2s)
+		{
+			uart->begin(baudRate);
+			mode = p_mode;
+			MMU2S::Enable(uart);
+		}
+#endif
 		else
 		{
 #if SUPPORT_MODBUS_RTU

@@ -567,7 +567,7 @@ void GCodes::ClearBedMapping() noexcept
 GCodeResult GCodes::StraightProbe(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
 {
 	const int8_t fraction = gb.GetCommandFraction();
-	if (fraction < 2 || fraction > 5)
+	if (fraction < 2 || fraction > 6)
 	{
 		return GCodeResult::warningNotSupported;
 	}
@@ -598,6 +598,9 @@ GCodeResult GCodes::StraightProbe(GCodeBuffer& gb, const StringRef& reply) THROW
 	case 5:
 		straightProbeSettings.SetStraightProbeType(StraightProbeType::awayFromWorkpiece);
 		break;
+	case 6:
+	    straightProbeSettings.SetStraightProbeType(StraightProbeType::towardsWorkpieceErrorOnFailureRepeated);
+	    break;
 	}
 
 	// Get the target coordinates (as user position) and check if we would move at all
@@ -703,7 +706,7 @@ GCodeResult GCodes::StraightProbe(GCodeBuffer& gb, const StringRef& reply) THROW
 	{
 		straightProbeSettings.SetFeedRateOverride(gb.GetSpeedFromMm(false));
 	}
-
+	straightProbeTapsDone = 0;
 	gb.SetState(GCodeState::straightProbe0);
 	return GCodeResult::ok;
 }

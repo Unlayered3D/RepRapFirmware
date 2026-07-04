@@ -56,6 +56,10 @@
 # include <Accelerometers/Accelerometers.h>
 #endif
 
+#if SUPPORT_MMU2S
+# include <Comms/MMU2S/MMU2S.h>
+#endif
+
 #ifdef DUET3_ATE
 # include <Duet3Ate.h>
 #endif
@@ -726,7 +730,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 
 		GCodeResult result;
 		if (   gb.GetCommandFraction() > 0
-			&& code != 36 && code != 201 && code != 260 && code != 261 && code != 505
+			&& code != 36 && code != 201 && code != 203 && code != 205 && code != 260 && code != 261 && code != 505
 #if SUPPORT_SCANNING_PROBES
 			&& code != 558
 #endif
@@ -2433,9 +2437,34 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			case 201: // Set/print axis accelerations
 				{
 					const int frac = gb.GetCommandFraction();
-					if (frac > 1)
+					if (frac > 2)
 					{
 						result = GCodeResult::errorNotSupported;
+						break;
+					}
+					if (frac == 2)
+					{
+						// M201.2 P<motor> S<accel_mm_per_s2> — set per-motor max acceleration
+						Kinematics& k = reprap.GetMove().GetKinematics();
+						if (gb.Seen('P'))
+						{
+							const size_t motor = gb.GetUIValue();
+							gb.MustSee('S');
+							k.SetMotorMaxAcceleration(motor, ConvertAcceleration(gb.GetFValue()));
+							reprap.MoveUpdated();
+						}
+						else
+						{
+							reply.copy("Motor max accelerations (mm/sec^2):");
+							for (size_t motor = 0; motor < MaxAxes; ++motor)
+							{
+								const float val = k.GetMotorMaxAcceleration(motor);
+								if (val != FLT_MAX)
+								{
+									reply.catf(" P%u:%.1f", motor, (double)InverseConvertAcceleration(val));
+								}
+							}
+						}
 						break;
 					}
 
@@ -2486,6 +2515,31 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 
 			case 203: // Set/print minimum/maximum feedrates
 				{
+					if (gb.GetCommandFraction() == 2)
+					{
+						// M203.2 P<motor> S<speed_mm_per_min> — set per-motor max feedrate (speed in mm/min, same as M203 default)
+						Kinematics& k = reprap.GetMove().GetKinematics();
+						if (gb.Seen('P'))
+						{
+							const size_t motor = gb.GetUIValue();
+							gb.MustSee('S');
+							k.SetMotorMaxFeedrate(motor, gb.GetSpeedFromMm(false));
+							reprap.MoveUpdated();
+						}
+						else
+						{
+							reply.copy("Motor max speeds (mm/min):");
+							for (size_t motor = 0; motor < MaxAxes; ++motor)
+							{
+								const float val = k.GetMotorMaxFeedrate(motor);
+								if (val != FLT_MAX)
+								{
+									reply.catf(" P%u:%.1f", motor, (double)InverseConvertSpeedToMm(val, false));
+								}
+							}
+						}
+						break;
+					}
 					// Units are mm/sec if S1 is given, else mm/min
 					const bool usingMmPerSec = (gb.Seen('S') && gb.GetIValue() == 1);
 					bool seen = false;
@@ -3688,6 +3742,31 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			case 205: // Set/print printing jerk speeds in mm/sec
 			case 566: // Set/print machine limit jerk speeds in mm/min
 				{
+					if (code == 205 && gb.GetCommandFraction() == 2)
+					{
+						// M205.2 P<motor> S<jerk_mm_per_sec> — set per-motor max jerk
+						Kinematics& k = reprap.GetMove().GetKinematics();
+						if (gb.Seen('P'))
+						{
+							const size_t motor = gb.GetUIValue();
+							gb.MustSee('S');
+							k.SetMotorMaxJerk(motor, gb.GetSpeedFromMm(true));
+							reprap.MoveUpdated();
+						}
+						else
+						{
+							reply.copy("Motor max jerks (mm/sec):");
+							for (size_t motor = 0; motor < MaxAxes; ++motor)
+							{
+								const float val = k.GetMotorMaxJerk(motor);
+								if (val != FLT_MAX)
+								{
+									reply.catf(" P%u:%.1f", motor, (double)InverseConvertSpeedToMm(val, true));
+								}
+							}
+						}
+						break;
+					}
 					const bool useMmPerSec = (code == 205);
 					const bool setMax = (code == 566);
 					bool seenAxis = false, seenExtruder = false;
@@ -4621,6 +4700,12 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				}
 				break;
 
+#if SUPPORT_MMU2S
+			case 1750:	// Direct MMU2S control
+				result = HandleMMU2SDirectCommand(gb, reply);
+				break;
+#endif
+
 			default:
 #if HAS_SBC_INTERFACE
 				// Send unknown non-binary codes to DSF so potential plugins can interpret them
@@ -4909,5 +4994,162 @@ bool GCodes::HandleResult(GCodeBuffer& gb, GCodeResult rslt, const StringRef& re
 	}
 	return true;
 }
+
+#if SUPPORT_MMU2S
+
+// M1750 — direct MMU2S control
+// M1750 T{slot}  tool change to slot
+// M1750 L{slot}  load filament from slot
+// M1750 U        unload current filament
+// M1750 E{slot}  eject filament from slot
+// M1750 K{slot}  cut filament at slot
+// M1750 H{n}     home MMU axes
+// M1750 R        reset MMU (also re-runs startup handshake)
+// M1750 P        query FINDA sensor
+// M1750 B{n}     simulate button press (0=left, 1=middle, 2=right)
+// M1750          print MMU2S status/diagnostics
+GCodeResult GCodes::HandleMMU2SDirectCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
+{
+	if (!MMU2S::IsEnabled())
+	{
+		reply.copy("MMU2S not enabled - configure with M575 P{n} S8 B115200");
+		return GCodeResult::error;
+	}
+
+	GCodeResult r = GCodeResult::ok;
+	bool seen = false;
+
+	if (gb.Seen('T'))
+	{
+		seen = true;
+		r = MMU2S::StartToolChange((uint8_t)gb.GetLimitedUIValue('T', MMU2SNumSlots));
+	}
+	else if (gb.Seen('L'))
+	{
+		seen = true;
+		r = MMU2S::StartLoad((uint8_t)gb.GetLimitedUIValue('L', MMU2SNumSlots));
+	}
+	else if (gb.Seen('U'))
+	{
+		seen = true;
+		r = MMU2S::StartUnload();
+	}
+	else if (gb.Seen('E'))
+	{
+		seen = true;
+		r = MMU2S::StartEject((uint8_t)gb.GetLimitedUIValue('E', MMU2SNumSlots));
+	}
+	else if (gb.Seen('K'))
+	{
+		seen = true;
+		r = MMU2S::StartCut((uint8_t)gb.GetLimitedUIValue('K', MMU2SNumSlots));
+	}
+	else if (gb.Seen('H'))
+	{
+		seen = true;
+		r = MMU2S::StartHome((uint8_t)gb.GetUIValue());
+	}
+	else if (gb.Seen('R'))
+	{
+		seen = true;
+		r = MMU2S::StartReset();
+	}
+	else if (gb.Seen('P'))
+	{
+		seen = true;
+		r = MMU2S::StartFindaQuery();
+	}
+	else if (gb.Seen('B'))
+	{
+		seen = true;
+		r = MMU2S::StartButton((uint8_t)gb.GetLimitedUIValue('B', 3));
+	}
+	else if (gb.Seen('W'))
+	{
+		// M1750 W — wait (block) until the current/most-recent MMU operation completes.
+		// Pairs with an async start (e.g. M1750 T1 S1): a macro can start the MMU feed, run the
+		// extruder concurrently, then synchronise here. No-op (returns immediately) if nothing is running.
+		gb.SetState(GCodeState::mmu2sDirect0);
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('V'))
+	{
+		// M1750 V1 — enable verbose UART logging; M1750 V0 — disable
+		const bool enable = (gb.GetUIValue() != 0);
+		MMU2S::SetVerboseUart(enable);
+		reply.catf("MMU2S verbose UART logging %s", enable ? "enabled" : "disabled");
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('F'))
+	{
+		// M1750 F1 — manually tell the MMU the filament sensor is triggered (filament reached the
+		// extruder); F0 — not triggered. Use F1 to complete a load the MMU is waiting on (no real sensor).
+		const uint8_t v = (gb.GetUIValue() != 0) ? 1u : 0u;
+		MMU2S::SendFilamentSensorState(v);
+		reply.catf("MMU2S filament-sensor state sent: f%u", v);
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('D'))
+	{
+		// M1750 D{ms} — set the sensor trip delay.
+		// With a real sensor (M1750 C): how long to wait after the sensor trips before reporting f1,
+		// giving the filament time to travel past the sensor and seat in the gears.
+		// Without a real sensor: how long after FeedingToBondtech before faking f1.
+		const uint32_t ms = gb.GetUIValue();
+		MMU2S::SetFsensorTripDelay(ms);
+		MMU2S::SetFsensorTriggerDelay(ms);
+		reply.catf("MMU2S filament-sensor trip delay = %" PRIu32 " ms", ms);
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('Z'))
+	{
+		// M1750 Z{mm} — set the MMU Bowden length (written to register 0x22 on the next M1750 R / handshake)
+		MMU2S::SetBowdenLengthMm((uint16_t)gb.GetLimitedUIValue('Z', 341, 1001));	// register range 341-1000
+		reply.catf("MMU2S Bowden length = %u mm (re-run M1750 R to apply)", MMU2S::GetBowdenLengthMm());
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('X'))
+	{
+		// M1750 X{mm} — set the MMU extra load distance: how far it pushes past the (simulated) sensor
+		// toward the extruder gears (written to register 0x0b on the next M1750 R / handshake)
+		MMU2S::SetExtraLoadDistance((uint8_t)gb.GetLimitedUIValue('X', 0, 31));	// register range 0-30
+		reply.catf("MMU2S extra load distance = %u mm (re-run M1750 R to apply)", MMU2S::GetExtraLoadDistance());
+		return GCodeResult::ok;
+	}
+	else if (gb.Seen('C'))
+	{
+		// M1750 C"io4.in"  — assign the real extruder filament-sensor pin (use C"!io4.in" for active-low).
+		// Once set, the firmware reports the REAL sensor to the MMU during load/unload (no timer sim).
+		return MMU2S::ConfigureFilamentSensor(gb, reply);
+	}
+
+	if (!seen)
+	{
+		MMU2S::Diagnostics(reply);
+		return GCodeResult::ok;
+	}
+
+	if (r == GCodeResult::ok)
+	{
+		// "S1" starts the operation WITHOUT blocking: it runs in the background (MMU2S::Spin polls it),
+		// so the macro can run the extruder etc. and later call M1750 W to wait for completion.
+		// Default (no S, or S0) blocks here until the operation finishes, as before (backwards compatible).
+		if (gb.Seen('S') && gb.GetUIValue() != 0)
+		{
+			reply.copy("MMU2S: operation started (async; use M1750 W to wait)");
+		}
+		else
+		{
+			gb.SetState(GCodeState::mmu2sDirect0);
+		}
+	}
+	else
+	{
+		reply.copy(MMU2S::IsInError() ? "MMU2S is in error state - use M1750 R to reset" : "MMU2S busy");
+	}
+	return r;
+}
+
+#endif	// SUPPORT_MMU2S
 
 // End

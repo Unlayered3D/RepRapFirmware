@@ -327,6 +327,14 @@
 # error Cannot support Modbus RTU without aux devices
 #endif
 
+#ifndef SUPPORT_MMU2S
+# define SUPPORT_MMU2S					0
+#endif
+
+#if SUPPORT_MMU2S && !HAS_AUX_DEVICES
+# error Cannot support MMU2S without aux devices
+#endif
+
 // Function to look up a pin name pass back the corresponding index into the pin table
 bool LookupPinName(const char *_ecv_array pn, LogicalPin& lpin, bool& hardwareInverted) noexcept;
 
