@@ -167,6 +167,10 @@ void ZProbe::PrepareForUse(const bool probingAway) noexcept
 
 	// We can't read temperature sensors from within the step ISR so calculate the actual trigger height now
 	actualTriggerHeight = -offsets[Z_AXIS] + GetTriggerHeightCompensation();
+
+#if SUPPORT_CAN_EXPANSION
+	haveTriggerTime = false;
+#endif
 }
 
 // Return the amount by which the trigger height is increased by temperature compensation
@@ -248,42 +252,51 @@ bool ZProbe::WriteParameters(FileStore *f, unsigned int probeNumber) const noexc
 int32_t ZProbe::GetReading() const noexcept
 {
 	int32_t zProbeVal = 0;
-	const Platform& p = reprap.GetPlatform();
-	if (type == ZProbeType::unfilteredDigital || type == ZProbeType::blTouch || (p.GetZProbeOnFilter().IsValid() && p.GetZProbeOffFilter().IsValid()))
+#if SUPPORT_CAN_EXPANSION
+	if (IsRemote())
 	{
-		switch (type)
-		{
-		case ZProbeType::analog:				// Simple or intelligent IR sensor
-		case ZProbeType::alternateAnalog:		// Alternate sensor
-		case ZProbeType::digital:				// Switch connected to Z probe input
-			zProbeVal = (int32_t)((p.GetZProbeOnFilter().GetSum() + p.GetZProbeOffFilter().GetSum()) / (int32_t)(2 * ZProbeAverageReadings));
-			break;
-
-		case ZProbeType::dumbModulated:		// Dumb modulated IR sensor.
-			// We assume that zProbeOnFilter and zProbeOffFilter average the same number of readings.
-			// Because of noise, it is possible to get a negative reading, so allow for this.
-			zProbeVal = ((int32_t)p.GetZProbeOnFilter().GetSum() - (int32_t)p.GetZProbeOffFilter().GetSum())/(int32_t)ZProbeAverageReadings;
-			break;
-
-		case ZProbeType::unfilteredDigital:		// Switch connected to Z probe input, no filtering
-		case ZProbeType::blTouch:				// blTouch is now unfiltered too
-		case ZProbeType::scanningAnalog:		// scanning analog probes are unfiltered for speed
-			zProbeVal = GetRawReading();
-			break;
-
-		case ZProbeType::zMotorStall:
-#if HAS_STALL_DETECT
-			{
-				const LocalDriversBitmap zDrivers = reprap.GetMove().GetAxisDriversConfig(Z_AXIS).GetLocalDriversBitmap();
-				zProbeVal = (GetStalledDrivers(zDrivers).IsNonEmpty()) ? 1000 : 0;
-			}
-#else
-			return 1000;
+		zProbeVal = GetRawReading();
+	}
+	else
 #endif
-			break;
+	{
+		const Platform& p = reprap.GetPlatform();
+		if (type == ZProbeType::unfilteredDigital || type == ZProbeType::blTouch || (p.GetZProbeOnFilter().IsValid() && p.GetZProbeOffFilter().IsValid()))
+		{
+			switch (type)
+			{
+			case ZProbeType::analog:				// Simple or intelligent IR sensor
+			case ZProbeType::alternateAnalog:		// Alternate sensor
+			case ZProbeType::digital:				// Switch connected to Z probe input
+				zProbeVal = (int32_t)((p.GetZProbeOnFilter().GetSum() + p.GetZProbeOffFilter().GetSum()) / (int32_t)(2 * ZProbeAverageReadings));
+				break;
 
-		default:
-			return 1000;
+			case ZProbeType::dumbModulated:		// Dumb modulated IR sensor.
+				// We assume that zProbeOnFilter and zProbeOffFilter average the same number of readings.
+				// Because of noise, it is possible to get a negative reading, so allow for this.
+				zProbeVal = ((int32_t)p.GetZProbeOnFilter().GetSum() - (int32_t)p.GetZProbeOffFilter().GetSum())/(int32_t)ZProbeAverageReadings;
+				break;
+
+			case ZProbeType::unfilteredDigital:		// Switch connected to Z probe input, no filtering
+			case ZProbeType::blTouch:				// blTouch is now unfiltered too
+			case ZProbeType::scanningAnalog:		// scanning analog probes are unfiltered for speed
+				zProbeVal = GetRawReading();
+				break;
+
+			case ZProbeType::zMotorStall:
+#if HAS_STALL_DETECT
+				{
+					const LocalDriversBitmap zDrivers = reprap.GetMove().GetAxisDriversConfig(Z_AXIS).GetLocalDriversBitmap();
+					zProbeVal = (GetStalledDrivers(zDrivers).IsNonEmpty()) ? 1000 : 0;
+				}
+#else
+				return 1000;
+#endif
+				break;
+
+			default:
+				return 1000;
+			}
 		}
 	}
 
@@ -333,7 +346,11 @@ EndstopHitDetails ZProbe::CheckTriggered() noexcept
 	EndstopHitDetails rslt;			// initialised by default constructor
 	if (b)
 	{
-		rslt.SetAction(EndstopHitAction::stopAll);
+		rslt.SetAction(EndstopHitAction::stopAll
+#if SUPPORT_CAN_EXPANSION
+						, whenTriggered, haveTriggerTime
+#endif
+					  );
 		rslt.isZProbe = true;
 	}
 	return rslt;
@@ -343,6 +360,9 @@ EndstopHitDetails ZProbe::CheckTriggered() noexcept
 // Return true if we have finished with this endstop or probe in this move.
 bool ZProbe::Acknowledge(EndstopHitDetails what) noexcept
 {
+#if SUPPORT_CAN_EXPANSION
+	haveTriggerTime = false;
+#endif
 	return what.GetAction() == EndstopHitAction::stopAll;
 }
 

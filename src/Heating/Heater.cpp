@@ -113,10 +113,7 @@ Heater::HeaterParameters Heater::fanOffParams, Heater::fanOnParams;
 }
 
 Heater::Heater(unsigned int num) noexcept
-	: tuned(false), heaterNumber(num), sensorNumber(-1), activeTemperature(0.0), standbyTemperature(0.0),
-	  maxTempExcursion(DefaultMaxTempExcursion), maxHeatingFaultTime(DefaultMaxHeatingFaultTime), maxBadTemperatureCount(DefaultMaxBadTemperatureCount),
-	  isBedOrChamber(false),
-	  active(false), usingFeedForward(false), modelSetByUser(false), monitorsSetByUser(false)
+	: heaterNumber(num)
 {
 	Heater::ResetHeater();
 }
@@ -131,13 +128,17 @@ Heater::~Heater() noexcept
 
 void Heater::ResetHeater() noexcept
 {
-	previousExtrusionPwmBoost = extrusionTemperatureBoost = extrusionPwmBoost = 0.0;
+	extrusionPwmBoost = 0.0;
+	extrusionTemperatureBoost = 0.0;
+	previousExtrusionPwmBoost = 0.0;
 	lastFanPwm = 0.0;
 }
 
 void Heater::SwitchOff() noexcept
 {
-	previousExtrusionPwmBoost = extrusionTemperatureBoost = extrusionPwmBoost = 0.0;
+	extrusionPwmBoost = 0.0;
+	extrusionTemperatureBoost = 0.0;
+	previousExtrusionPwmBoost = 0.0;
 }
 
 void Heater::SetSensorNumber(int sn) noexcept
@@ -232,7 +233,7 @@ GCodeResult Heater::SetOrReportModel(unsigned int heater, GCodeBuffer& gb, const
 	}
 	else
 	{
-		model.AppendModelParameters(heater, reply, !reprap.GetHeat().IsBedOrChamberHeater(heater));
+		model.AppendModelParameters(heater, reply, reprap.GetHeat().GetHeaterFunction(heater) == HeaterFunction::tool);
 	}
 	return GCodeResult::ok;
 }
@@ -245,7 +246,7 @@ GCodeResult Heater::SetModel(float hr, float bcr, float fcr, float coolingRateEx
 	{
 		if (model.IsEnabled())
 		{
-			rslt = UpdateModel(reply);
+			rslt = UpdateRemoteModel(reply);
 			if (rslt == GCodeResult::ok)
 			{
 				const float predictedMaxTemp = GetModel().EstimateMaxTemperatureRise() + NormalAmbientTemperature;
@@ -407,16 +408,16 @@ void Heater::SetAndReportModelAfterTuning(bool usingFans) noexcept
 {
 	const float hRate = (usingFans) ? (fanOffParams.heatingRate + fanOnParams.heatingRate) * 0.5 : fanOffParams.heatingRate;
 	const float deadTime = (usingFans) ? (fanOffParams.deadTime + fanOnParams.deadTime) * 0.5 : fanOffParams.deadTime;
-	const float coolingRateExponent = (reprap.GetHeat().IsBedOrChamberHeater(GetHeaterNumber())) ? DefaultBedHeaterCoolingRateExponent : DefaultToolHeaterCoolingRateExponent;
+	const float coolingRateExponent = model.GetCoolingRateExponent();					// we don't attempt to tune this
 	const float averageTemperatureRiseCooling = tuningTargetTemp - TuningPeakTempDrop - 0.5 * tuningHysteresis - tuningStartTemp.GetMean();
-	const float basicCoolingRate = fanOffParams.coolingRate/powf(averageTemperatureRiseCooling * 0.01, coolingRateExponent);
+	const float basicCoolingRate = model.CalculateBasicCoolingRate(averageTemperatureRiseCooling, fanOffParams.coolingRate);
 	float fanOnCoolingRate = 0.0;
 	if (usingFans)
 	{
 		// Sometimes the print cooling fan makes no difference to the cooling rate. The SetModel call will fail if the rate with fan on is lower than the rate with fan off.
 		if (fanOnParams.coolingRate > fanOffParams.coolingRate)
 		{
-			fanOnCoolingRate = ((fanOnParams.coolingRate - fanOffParams.coolingRate) * 100.0)/(averageTemperatureRiseCooling * tuningFanPwm);
+			fanOnCoolingRate = model.CalculateFanCoolingRate(averageTemperatureRiseCooling,  fanOnParams.coolingRate - fanOffParams.coolingRate, tuningFanPwm);
 		}
 		else
 		{
@@ -453,7 +454,7 @@ void Heater::SetAndReportModelAfterTuning(bool usingFans) noexcept
 		else
 		{
 			str.cat( ". This heater needs the following M307 command:\n");
-			GetModel().AppendM307Command(GetHeaterNumber(), str.GetRef(), !reprap.GetHeat().IsBedOrChamberHeater(GetHeaterNumber()));
+			GetModel().AppendM307Command(GetHeaterNumber(), str.GetRef(), reprap.GetHeat().GetHeaterFunction(GetHeaterNumber()) == HeaterFunction::tool);
 		}
 		reprap.GetPlatform().Message(LoggedGenericMessage, str.c_str());
 
@@ -614,7 +615,7 @@ GCodeResult Heater::SetActiveOrStandby(bool setActive, const StringRef& reply) n
 	if (GetMode() != HeaterMode::fault)
 	{
 		active = setActive;
-		isBedOrChamber = reprap.GetHeat().IsBedOrChamberHeater(heaterNumber);
+		function = reprap.GetHeat().GetHeaterFunction(heaterNumber);
 		return SwitchOn(reply);
 	}
 	reply.printf("Can't turn heater %u on while in fault state", heaterNumber);
@@ -637,7 +638,7 @@ void Heater::SetTemperature(float t, bool activeNotStandby) THROWS(GCodeExceptio
 		if (GetMode() > HeaterMode::suspended && active == activeNotStandby)
 		{
 			String<StringLength100> reply;
-			isBedOrChamber = reprap.GetHeat().IsBedOrChamberHeater(heaterNumber);
+			function = reprap.GetHeat().GetHeaterFunction(heaterNumber);
 			if (!Succeeded(SwitchOn(reply.GetRef())))
 			{
 				throw GCodeException(-1, 1, reply.c_str());
@@ -658,34 +659,41 @@ void Heater::ClearModelAndMonitors() noexcept
 	modelSetByUser = monitorsSetByUser = false;
 }
 
-// This is called when this heater is declared to be a tool heater using M563
-void Heater::SetAsToolHeater() noexcept
+// This is called when a heater is assigned a function (tool, bed or chamber)
+void Heater::SetFunction(HeaterFunction func) noexcept
 {
+	function = func;
 	if (!modelSetByUser)
 	{
-		model.SetDefaultToolParameters();
-		String<1> dummy;
-		(void)UpdateModel(dummy.GetRef());
+		(void)SetDefaultModel(function);
 	}
 	if (!monitorsSetByUser && sensorNumber >= 0 && sensorNumber < (int)MaxSensors)
 	{
-		monitors[0].Set(sensorNumber, DefaultHotEndTemperatureLimit, HeaterMonitorAction::GenerateFault, HeaterMonitorTrigger::TemperatureExceeded);
+		float tempLimit;
+		switch (func)
+		{
+		case HeaterFunction::bed:
+			tempLimit = DefaultBedTemperatureLimit;
+			break;
+		case HeaterFunction::chamber:
+			tempLimit = DefaultChamberTemperatureLimit;
+			break;
+		default:
+			tempLimit = DefaultHotEndTemperatureLimit;
+			break;
+		}
+		monitors[0].Set(sensorNumber, tempLimit, HeaterMonitorAction::GenerateFault, HeaterMonitorTrigger::TemperatureExceeded);
 	}
 }
 
-// This is called when a heater is declared to be a bed or chamber heater using M140 or M141
-void Heater::SetAsBedOrChamberHeater() noexcept
+float Heater::GetMaxPwmFaultTime() const noexcept
 {
-	if (!modelSetByUser)
-	{
-		model.SetDefaultBedOrChamberParameters();
-		String<1> dummy;
-		(void)UpdateModel(dummy.GetRef());
-	}
-	if (!monitorsSetByUser &&sensorNumber >= 0 && sensorNumber < (int)MaxSensors)
-	{
-		monitors[0].Set(sensorNumber, DefaultBedTemperatureLimit, HeaterMonitorAction::GenerateFault, HeaterMonitorTrigger::TemperatureExceeded);
-	}
+	return max<float>(DefaultToolHeaterPwmFaultTime, 5 * model.GetDeadTime());
+}
+
+float Heater::GetPwmFaultLevel() const noexcept
+{
+	return DefaultToolHeaterPwmFaultLevel;
 }
 
 #if SUPPORT_REMOTE_COMMANDS
@@ -710,16 +718,12 @@ GCodeResult Heater::SetFaultDetectionParameters(const CanMessageSetHeaterFaultDe
 	return GCodeResult::ok;
 }
 
-GCodeResult Heater::SetModel(unsigned int heater, const CanMessageHeaterModelNewNew& msg, const StringRef& reply) noexcept
+GCodeResult Heater::SetModel(unsigned int heater, const CanMessageHeaterModelV3& msg, const StringRef& reply) noexcept
 {
 	const bool rslt = model.SetParameters(msg, reply);
 	if (rslt)
 	{
-		if (model.IsEnabled())
-		{
-			return UpdateModel(reply);
-		}
-		else
+		if (!model.IsEnabled())
 		{
 			ResetHeater();
 		}
@@ -729,43 +733,43 @@ GCodeResult Heater::SetModel(unsigned int heater, const CanMessageHeaterModelNew
 	return GCodeResult::error;
 }
 
-GCodeResult Heater::SetTemperature(const CanMessageSetHeaterTemperature& msg, const StringRef& reply) noexcept
+GCodeResult Heater::SetTemperature(const CanMessageSetHeaterTemperatureV1& msg, const StringRef& reply) noexcept
 {
 	switch (msg.command)
 	{
-	case CanMessageSetHeaterTemperature::commandNone:
+	case CanMessageSetHeaterTemperatureV1::commandNone:
 		activeTemperature = standbyTemperature = msg.setPoint;
 		model.CalcPidConstants(activeTemperature);
 		return GCodeResult::ok;
 
-	case CanMessageSetHeaterTemperature::commandOff:
+	case CanMessageSetHeaterTemperatureV1::commandOff:
 		activeTemperature = standbyTemperature = msg.setPoint;
 		model.CalcPidConstants(activeTemperature);
 		SwitchOff();
 		return GCodeResult::ok;
 
-	case CanMessageSetHeaterTemperature::commandOn:
-		isBedOrChamber = msg.isBedOrChamber;
+	case CanMessageSetHeaterTemperatureV1::commandOn:
+		function = (HeaterFunction)msg.function;
 		activeTemperature = standbyTemperature = msg.setPoint;
 		model.CalcPidConstants(activeTemperature);
 		return SwitchOn(reply);
 
-	case CanMessageSetHeaterTemperature::commandResetFault:
+	case CanMessageSetHeaterTemperatureV1::commandResetFault:
 		activeTemperature = standbyTemperature = msg.setPoint;
 		model.CalcPidConstants(activeTemperature);
 		return ResetFault(reply);
 
-	case CanMessageSetHeaterTemperature::commandSuspend:
+	case CanMessageSetHeaterTemperatureV1::commandSuspend:
 		Suspend(true);
 		return GCodeResult::ok;
 
-	case CanMessageSetHeaterTemperature::commandUnsuspend:
+	case CanMessageSetHeaterTemperatureV1::commandUnsuspend:
 		activeTemperature = standbyTemperature = msg.setPoint;
 		model.CalcPidConstants(activeTemperature);
 		Suspend(false);
 		return GCodeResult::ok;
 
-	case CanMessageSetHeaterTemperature::commandReset:
+	case CanMessageSetHeaterTemperatureV1::commandReset:
 		ResetHeater();
 		return GCodeResult::ok;
 

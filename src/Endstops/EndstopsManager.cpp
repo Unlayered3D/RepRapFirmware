@@ -747,7 +747,7 @@ size_t EndstopsManager::GetNumProbesToReport() const noexcept
 #if SUPPORT_CAN_EXPANSION
 
 // Handle signalling of a remote switch change, when the handle indicates that it is being used as an endstop.
-void EndstopsManager::HandleRemoteEndstopChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, bool state) noexcept
+void EndstopsManager::HandleRemoteEndstopChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, uint16_t when, bool state) noexcept
 {
 	if (handleMajor < ARRAY_SIZE(axisEndstops))
 	{
@@ -755,13 +755,13 @@ void EndstopsManager::HandleRemoteEndstopChange(CanAddress src, uint8_t handleMa
 		Endstop * const es = axisEndstops[handleMajor];
 		if (es != nullptr)
 		{
-			es->HandleRemoteInputChange(src, handleMinor, state);
+			es->HandleRemoteInputChange(src, handleMinor, when, state);
 		}
 	}
 }
 
 // Handle signalling of a remote switch change, when the handle indicates that it is being used as a Z probe.
-void EndstopsManager::HandleRemoteZProbeChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, bool state, uint32_t reading) noexcept
+void EndstopsManager::HandleRemoteZProbeChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, uint16_t when, bool state, int32_t reading) noexcept
 {
 	if (handleMajor < ARRAY_SIZE(zProbes))
 	{
@@ -769,12 +769,12 @@ void EndstopsManager::HandleRemoteZProbeChange(CanAddress src, uint8_t handleMaj
 		ZProbe * const zp = zProbes[handleMajor];
 		if (zp != nullptr)
 		{
-			zp->HandleRemoteInputChange(src, handleMinor, state, reading);
+			zp->HandleRemoteInputChange(src, handleMinor, when, state, reading);
 		}
 	}
 }
 
-void EndstopsManager::HandleRemoteAnalogZProbeValueChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, uint32_t reading) noexcept
+void EndstopsManager::HandleRemoteAnalogZProbeValueChange(CanAddress src, uint8_t handleMajor, uint8_t handleMinor, uint16_t when, int32_t reading) noexcept
 {
 	if (handleMajor < ARRAY_SIZE(zProbes))
 	{
@@ -782,12 +782,12 @@ void EndstopsManager::HandleRemoteAnalogZProbeValueChange(CanAddress src, uint8_
 		ZProbe * const zp = zProbes[handleMajor];
 		if (zp != nullptr)
 		{
-			zp->UpdateRemoteReading(src, handleMinor, reading);
+			zp->UpdateRemoteReading(src, handleMinor, when, reading);
 		}
 	}
 }
 
-void EndstopsManager::HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled) noexcept
+void EndstopsManager::HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled, uint16_t when) noexcept
 {
 	ReadLocker lock(endstopsLock);						// make sure endstops are not changed or deleted while we operate on them
 
@@ -795,13 +795,13 @@ void EndstopsManager::HandleStalledRemoteDrivers(CanAddress boardAddress, LocalD
 	{
 		if (es != nullptr)
 		{
-			es->HandleStalledRemoteDrivers(boardAddress, driversReportedStalled);
+			es->HandleStalledRemoteDrivers(boardAddress, driversReportedStalled, when);
 		}
 	}
 
 	if (extrudersEndstop != nullptr)
 	{
-		extrudersEndstop->HandleStalledRemoteDrivers(boardAddress, driversReportedStalled);
+		extrudersEndstop->HandleStalledRemoteDrivers(boardAddress, driversReportedStalled, when);
 	}
 }
 

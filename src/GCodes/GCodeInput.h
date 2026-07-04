@@ -14,6 +14,8 @@
 
 #include <Stream.h>
 
+class SerialCDC;
+
 const size_t GCodeInputBufferSize = 256;						// How many bytes can we cache per input source? Make this a power of 2 for efficiency
 
 // This base class provides incoming G-codes for the GCodeBuffer class
@@ -23,6 +25,7 @@ public:
 	virtual void Reset() noexcept = 0;							// Clean all the cached data from this input
 	virtual bool FillBuffer(GCodeBuffer *gb) noexcept = 0;		// Fill a GCodeBuffer with the last available G-code
 	virtual size_t BytesCached() const noexcept = 0;			// How many bytes have been cached?
+	virtual void SetWritingFile(bool wf) noexcept { (void)wf; }	// Suppress urgent command scanning while writing a file
 };
 
 // This class provides a standard implementation of FillBuffer that calls ReadByte() to supply individual characters
@@ -74,16 +77,20 @@ enum class GCodeInputState
 class RegularGCodeInput : public StandardGCodeInput
 {
 public:
-	RegularGCodeInput() noexcept;
+	explicit RegularGCodeInput(MessageType mt) noexcept;
 
 	void Reset() noexcept override;
 	size_t BytesCached() const noexcept override;				// How many bytes have been cached?
 	size_t BufferSpaceLeft() const noexcept;					// How much space do we have left?
+	void SetWritingFile(bool wf) noexcept override { writingFile = wf; }
 
 protected:
 	char ReadByte() noexcept override;
+	bool CheckForUrgentCommand(char c) noexcept SPEED_CRITICAL;	// Check a character for M112/M122/M108, return true if handled
 
+	MessageType mtype;
 	GCodeInputState state;
+	bool writingFile;
 	size_t writingPointer, readingPointer;
 	char buffer[GCodeInputBufferSize];
 };
@@ -92,14 +99,33 @@ protected:
 class BufferedStreamGCodeInput : public RegularGCodeInput
 {
 public:
-	explicit BufferedStreamGCodeInput(Stream &_ecv_from dev) noexcept : RegularGCodeInput(), device(dev) { }
+	BufferedStreamGCodeInput(SerialCDC &_ecv_from dev, MessageType mt) noexcept : RegularGCodeInput(mt), device(dev) { }
 
-	void Reset() noexcept override;
 	bool FillBuffer(GCodeBuffer *gb) noexcept override;			// Fill a GCodeBuffer with the last available G-code
+	virtual void Spin() noexcept;								// Read from the device into the buffer and check for urgent commands
 
 private:
-	Stream &_ecv_from device;
+	SerialCDC &_ecv_from device;
 };
+
+#if defined(SERIAL_USB_DEVICE)
+
+class SerialCDC;
+
+// Subclass of BufferedStreamGCodeInput for USB CDC devices
+// Automatically resets buffered data when the USB host disconnects
+class UsbGCodeInput : public BufferedStreamGCodeInput
+{
+public:
+	UsbGCodeInput(SerialCDC &_ecv_from dev, MessageType mt) noexcept;
+
+	void Spin() noexcept override;
+
+private:
+	SerialCDC &_ecv_from usbDevice;
+};
+
+#endif
 
 enum class GCodeInputReadResult : uint8_t { haveData, noData, error };
 
@@ -111,7 +137,7 @@ class FileGCodeInput : public RegularGCodeInput
 {
 public:
 
-	FileGCodeInput() noexcept : RegularGCodeInput() { }
+	FileGCodeInput() noexcept : RegularGCodeInput(GenericMessage) { }
 
 	void Reset() noexcept override;									// Clears the buffer. Should be called when the associated file is being closed
 	void Reset(const FileData &file) noexcept;						// Clears the buffer of a specific file. Should be called when it is closed or re-opened outside the reading context
@@ -129,13 +155,13 @@ private:
 class NetworkGCodeInput : public RegularGCodeInput
 {
 public:
-	NetworkGCodeInput() noexcept;
+	explicit NetworkGCodeInput(MessageType mt) noexcept;
 
 	bool FillBuffer(GCodeBuffer *gb) noexcept override;					// Fill a GCodeBuffer with the last available G-code
-	bool Put(MessageType mtype, const char *_ecv_array buf) noexcept;	// Append a null-terminated string to the buffer returning true if success
+	bool Put(const char *_ecv_array buf) noexcept;						// Append a null-terminated string to the buffer returning true if success
 
 private:
-	void Put(MessageType mtype, char c) noexcept;						// Append a single character. This does NOT lock the mutex!
+	void Put(char c) noexcept SPEED_CRITICAL;							// Append a single character. This does NOT lock the mutex!
 
 	Mutex bufMutex;
 };

@@ -38,7 +38,6 @@
 
 #endif
 
-#if SUPPORT_OBJECT_MODEL
 // Object model table and functions
 // Note: if using GCC version 7.3.1 20180622 and lambda functions are used in this table, you must compile this file with option -std=gnu++17.
 // Otherwise the table will be allocate in RAM instead of flash, which wastes too much RAM.
@@ -58,6 +57,7 @@ constexpr ObjectModelTableEntry GCodeBuffer::objectModelTable[] =
 #endif
 	{ "axesRelative",		OBJECT_MODEL_FUNC((bool)self->machineState->axesRelative),							ObjectModelEntryFlags::none },
 	{ "compatibility",		OBJECT_MODEL_FUNC(self->machineState->compatibility.ToString()),					ObjectModelEntryFlags::none },
+	{ "currentFile",		OBJECT_MODEL_FUNC(self->machineState->fname),										ObjectModelEntryFlags::liveNotPanelDue },
 	{ "distanceUnit",		OBJECT_MODEL_FUNC(self->GetDistanceUnits()),										ObjectModelEntryFlags::none },
 	{ "drivesRelative",		OBJECT_MODEL_FUNC((bool)self->machineState->drivesRelative),						ObjectModelEntryFlags::none },
 	{ "feedRate",			OBJECT_MODEL_FUNC(self->machineState->feedRate, 1),									ObjectModelEntryFlags::liveNotPanelDue },
@@ -78,7 +78,7 @@ constexpr ObjectModelTableEntry GCodeBuffer::objectModelTable[] =
 	{ "volumetric",			OBJECT_MODEL_FUNC((bool)self->machineState->volumetricExtrusion),					ObjectModelEntryFlags::none },
 };
 
-constexpr uint8_t GCodeBuffer::objectModelTableDescriptor[] = { 1, 16 };
+constexpr uint8_t GCodeBuffer::objectModelTableDescriptor[] = { 1, 17 };
 
 DEFINE_GET_OBJECT_MODEL_TABLE(GCodeBuffer)
 
@@ -91,14 +91,12 @@ const char *_ecv_array GCodeBuffer::GetStateText() const noexcept
 
 	switch (bufferState)
 	{
-	case GCodeBufferState::parseNotStarted:		return "idle";
+	case GCodeBufferState::parseNotStarted:		return (buffer != nullptr) ? "idle" : "unused";
 	case GCodeBufferState::ready:				return "executing";
 	case GCodeBufferState::executing:			return "waiting";
 	default:									return "reading";
 	}
 }
-
-#endif
 
 // Create a default GCodeBuffer
 GCodeBuffer::GCodeBuffer(GCodeChannel::RawType channel, GCodeInput *_ecv_from normalIn, FileGCodeInput *_ecv_null fileIn, MessageType mt, Compatibility::RawType c) noexcept
@@ -115,7 +113,7 @@ GCodeBuffer::GCodeBuffer(GCodeChannel::RawType channel, GCodeInput *_ecv_from no
 	  stringParser(*this),
 	  machineState(new GCodeMachineState()), whenReportDueTimerStarted(millis()), lastStatusReportType(StatusReportType::none),
 	  codeChannel(channel), lastResult(GCodeResult::ok),
-	  disabled(false), timerRunning(false), motionCommanded(false), hadExplicitLineNumber(false)
+	  disabled(false), timerRunning(false), motionCommanded(false), hadExplicitLineNumber(false), buffer(nullptr), bufferLength(0)
 
 #if HAS_SBC_INTERFACE
 	  , isWaitingForMacro(false), isBinaryBuffer(false), invalidated(false)
@@ -141,7 +139,8 @@ void GCodeBuffer::Reset() noexcept
 #if HAS_SBC_INTERFACE
 	isBinaryBuffer = false;
 	requestedMacroFile.Clear();
-	isWaitingForMacro = macroFileClosed = false;
+	macroFileClosed = false;
+	isWaitingForMacro = false;
 	macroJustStarted = macroFileError = macroFileEmpty = abortFile = abortAllFiles = sendToSbc = messagePromptPending = messageAcknowledged = false;
 	machineState->lastCodeFromSbc = machineState->macroStartedByCode = false;
 #endif
@@ -157,7 +156,7 @@ void GCodeBuffer::Init() noexcept
 	binaryParser.Init();
 #endif
 	stringParser.Init();
-	timerRunning = false;
+	overflowed = timerRunning = false;
 #if SUPPORT_ASYNC_MOVES
 	syncState = SyncState::running;
 #endif
@@ -242,13 +241,20 @@ void GCodeBuffer::Diagnostics(const StringRef& reply) noexcept
 		reply.cat('"');
 		break;
 
+#if HAS_SBC_INTERFACE
+	case GCodeBufferState::executingOnSbc:
+		reply.cat("is doing \"");
+		AppendFullCommand(reply);
+		reply.cat("\" on the SBC");
+		break;
+#endif
+
 	default:
 		reply.cat("is assembling a command");
 		break;
 	}
 
-	if (machineState->GetPrevious() != nullptr ||
-		machineState->GetState() != GCodeState::normal || IsDoingFileMacro()
+	if (machineState->GetPrevious() != nullptr || machineState->GetState() != GCodeState::normal || IsDoingFileMacro()
 #if SUPPORT_ASYNC_MOVES
 		|| syncState != SyncState::running
 #endif
@@ -256,15 +262,18 @@ void GCodeBuffer::Diagnostics(const StringRef& reply) noexcept
 	{
 		reply.cat(" in state(s)");
 		const GCodeMachineState *_ecv_null ms = machineState;
-		do {
+		do
+		{
 			reply.catf(" %d", (int)ms->GetState());
 			ms = ms->GetPrevious();
 		} while (ms != nullptr);
-		if (IsDoingFileMacro()) {
+		if (IsDoingFileMacro())
+		{
 			reply.cat(", running macro");
 		}
 #if SUPPORT_ASYNC_MOVES
-		if (syncState != SyncState::running) {
+		if (syncState != SyncState::running)
+		{
 			reply.catf(", sync state %u", (unsigned int)syncState);
 		}
 #endif
@@ -327,8 +336,9 @@ void GCodeBuffer::PutAndDecode(const char *_ecv_array str) noexcept
 	stringParser.PutAndDecode(str);
 }
 
-void GCodeBuffer::StartNewFile() noexcept
+void GCodeBuffer::StartNewFile(const char *_ecv_array filename) noexcept
 {
+	machineState->fname.Assign(filename);
 #if HAS_SBC_INTERFACE
 	machineState->SetFileExecuting();
 #endif
@@ -704,6 +714,12 @@ ExpressionValue GCodeBuffer::GetExpression() THROWS(GCodeException)
 	return PARSER_OPERATION(GetExpression());
 }
 
+// Get an unsigned integer or a string after a key letter returning true if a string was found, false if an unsigned integer was found
+bool GCodeBuffer::GetStringOrUIValue(uint32_t& ival, const StringRef& str) THROWS(GCodeException)
+{
+	return PARSER_OPERATION(GetStringOrUIValue(ival, str));
+}
+
 // Get a :-separated list of drivers after a key letter
 void GCodeBuffer::GetDriverIdArray(DriverId arr[], size_t& length) THROWS(GCodeException)
 {
@@ -798,6 +814,18 @@ bool GCodeBuffer::TryGetLimitedUIValue(char c, uint32_t& val, bool& seen, uint32
 	if (Seen(c))
 	{
 		val = GetLimitedUIValue(c, maxValuePlusOne);
+		seen = true;
+		return true;
+	}
+	return false;
+}
+
+// Try to get an unsigned integer value, throw if outside limits
+bool GCodeBuffer::TryGetLimitedUIValue(char c, uint32_t& val, bool& seen, uint32_t minValue, uint32_t maxValuePlusOne) THROWS(GCodeException)
+{
+	if (Seen(c))
+	{
+		val = GetLimitedUIValue(c, minValue, maxValuePlusOne);
 		seen = true;
 		return true;
 	}
@@ -1094,6 +1122,7 @@ void GCodeBuffer::ClosePrintFile() noexcept
 				if (ms->fileId == printFileId)
 				{
 					ms->fileId = NoFileId;
+					ms->fname.Assign(nullptr);
 				}
 			}
 		}
@@ -1103,10 +1132,17 @@ void GCodeBuffer::ClosePrintFile() noexcept
 	{
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		FileData& fileBeingPrinted = OriginalMachineState().fileState;
-		GetFileInput()->Reset(fileBeingPrinted);
 		if (fileBeingPrinted.IsLive())
 		{
-			fileBeingPrinted.Close();
+			GetFileInput()->Reset(fileBeingPrinted);
+			for (GCodeMachineState *ms = machineState; ms != nullptr; ms = ms->GetPrevious())
+			{
+				if (ms->fileState == fileBeingPrinted)
+				{
+					ms->fileState.Close();
+					ms->fname.Assign(nullptr);
+				}
+			}
 		}
 #endif
 	}
@@ -1184,7 +1220,7 @@ bool GCodeBuffer::RequestMacroFile(const char *filename, bool fromCode) noexcept
 		// Wait for a response (but not forever)
 		isWaitingForMacro = true;
 		reprap.GetSbcInterface().EventOccurred(true);
-		if (!macroSemaphore.Take(SpiMaxRequestTime))
+		if (!macroSemaphore.Take(SbcMaxRequestTime))
 		{
 			isWaitingForMacro = false;
 			reprap.GetPlatform().MessageF(ErrorMessage, "Timeout while waiting for macro file %s (channel %s)\n", filename, GetChannel().ToString());
@@ -1313,7 +1349,12 @@ void GCodeBuffer::WaitForAcknowledgement(uint32_t seq) noexcept
 
 bool GCodeBuffer::OpenFileToWrite(const char *_ecv_array directory, const char *_ecv_array fileName, const FilePosition size, const bool binaryWrite, const uint32_t fileCRC32) noexcept
 {
-	return NOT_BINARY_AND(stringParser.OpenFileToWrite(directory, fileName, size, binaryWrite, fileCRC32));
+	if (NOT_BINARY_AND(stringParser.OpenFileToWrite(directory, fileName, size, binaryWrite, fileCRC32)))
+	{
+		normalInput->SetWritingFile(true);
+		return true;
+	}
+	return false;
 }
 
 bool GCodeBuffer::IsWritingFile() const noexcept
@@ -1324,6 +1365,10 @@ bool GCodeBuffer::IsWritingFile() const noexcept
 void GCodeBuffer::WriteToFile() noexcept
 {
 	IF_NOT_BINARY(stringParser.WriteToFile());
+	if (!IsWritingFile())
+	{
+		normalInput->SetWritingFile(false);
+	}
 }
 
 bool GCodeBuffer::IsWritingBinary() const noexcept
@@ -1339,6 +1384,7 @@ bool GCodeBuffer::WriteBinaryToFile(char b) noexcept
 void GCodeBuffer::FinishWritingBinary() noexcept
 {
 	IF_NOT_BINARY(stringParser.FinishWritingBinary());
+	normalInput->SetWritingFile(false);
 }
 
 #endif
@@ -1353,6 +1399,17 @@ void GCodeBuffer::RestartFrom(FilePosition pos) noexcept
 	}
 #endif
 	Init();											// clear the next move
+}
+
+// Binary (SBC) commands arrive already fully resolved, so there is no modal state to restore for them
+void GCodeBuffer::SetModalGCommand(int num) noexcept
+{
+#if HAS_SBC_INTERFACE
+	if (!isBinaryBuffer)
+#endif
+	{
+		stringParser.SetModalGCommand(num);
+	}
 }
 
 const char *_ecv_array GCodeBuffer::DataStart() const noexcept

@@ -10,6 +10,10 @@
 
 #if HAS_SBC_INTERFACE
 
+#if SUPPORTS_SBC_OVER_USB
+# include <Devices.h>
+#endif
+
 #include <GCodes/GCodeBuffer/ExpressionParser.h>
 #include <GCodes/GCodeBuffer/GCodeBuffer.h>
 #include <Heating/Heat.h>
@@ -50,9 +54,13 @@ extern "C" [[noreturn]] void SBCTaskStart(void * pvParameters) noexcept
 }
 
 SbcInterface::SbcInterface() noexcept : isConnected(false), numDisconnects(0), numTimeouts(0), numSbcTimeouts(0), lastTransferTime(0),
-	maxDelayBetweenTransfers(SpiTransferDelay), maxFileOpenDelay(SpiFileOpenDelay), numMaxEvents(SpiEventsRequired),
+	maxDelayBetweenTransfers(SbcTransferDelay), maxFileOpenDelay(SbcFileOpenDelay), numMaxEvents(SbcEventsRequired),
+	burstModeWindow(SbcBurstModeWindow), burstModeDelay(SbcBurstModeDelay), burstModeStartTime(0),
 	delaying(false), numEvents(0), reportPause(false), reportPauseWritten(false), printAborted(false),
 	codeBuffer(nullptr), rxPointer(0), txPointer(0), txEnd(0), sendBufferUpdate(true),
+#if SUPPORTS_SBC_OVER_USB
+	pendingUsbDevice(nullptr), usbDeviceIndex(0),
+#endif
 	fileMutex(), numOpenFiles(0), fileSemaphore(), fileOperation(FileOperation::none), fileOperationPending(false),
 	gcodeReply(), gcodeReplyMutex()
 #ifdef TRACK_FILE_CODES
@@ -65,12 +73,49 @@ void SbcInterface::Init() noexcept
 {
 	fileMutex.Create("SBCFile");
 	gcodeReplyMutex.Create("SBCReply");
-	codeBuffer = (char *)new uint32_t[(SpiCodeBufferSize + 3)/4];
+	codeBuffer = (char *)new uint32_t[(SbcCodeBufferSize + 3)/4];
 	transfer.Init();
 	sbcTask = new Task<SBCTaskStackWords>();
 	sbcTask->Create(SBCTaskStart, "SBC", nullptr, TaskPriority::SbcPriority);
 	iapRamAvailable = (const char*)&_estack - Tasks::GetHeapTop();
 }
+
+#if SUPPORTS_SBC_OVER_USB
+
+// Blocking write that retries until all bytes are sent or timeout
+static bool ReliableUsbWrite(SerialCDC *dev, const uint8_t *data, size_t length, uint32_t timeoutMs) noexcept
+{
+	const uint32_t startTime = millis();
+	while (length > 0)
+	{
+		const size_t written = dev->write(data, length);
+		data += written;
+		length -= written;
+		if (length > 0)
+		{
+			if (millis() - startTime >= timeoutMs)
+			{
+				return false;
+			}
+			delay(1);
+		}
+	}
+	dev->flush();
+	return true;
+}
+
+// Send the USB SBC init response message reliably
+static void SendUsbInitMessage(SerialCDC *dev) noexcept
+{
+	char buf[128];
+	SafeSnprintf(buf, sizeof(buf),
+		"Switching to binary SBC mode\n"
+		"{\"protocol\":%u,\"rxBuffer\":%u,\"txBuffer\":%u}\n",
+		(unsigned)SbcProtocolVersion, (unsigned)SbcTransferBufferSize, (unsigned)SbcTransferBufferSize);
+	ReliableUsbWrite(dev, reinterpret_cast<const uint8_t *>(buf), strlen(buf), 2000);
+}
+
+#endif // SUPPORTS_SBC_OVER_USB
 
 [[noreturn]] void SbcInterface::TaskLoop() noexcept
 {
@@ -80,6 +125,26 @@ void SbcInterface::Init() noexcept
 	bool busy = false, transferComplete = false, hadTimeout = false, hadSbcTimeout = false, hadReset = false;
 	for (;;)
 	{
+#if SUPPORTS_SBC_OVER_USB
+		// Check for pending USB transport switch (requested by GCode system after M576.1)
+		if (pendingUsbDevice != nullptr)
+		{
+			SerialCDC *dev = pendingUsbDevice;
+			pendingUsbDevice = nullptr;
+
+			// Switch DataTransfer from SPI to USB
+			transfer.SwitchToUsb(dev, usbDeviceIndex);
+
+			// Send init message via standard CDC I/O (before direct mode)
+			SendUsbInitMessage(dev);
+			dev->WaitForTxEmpty(SbcTxDrainTimeout);
+
+			// Handover: host sends first packet to complete CDC stream's pending OUT transfer
+			dev->BeginDirectMode();
+			continue;		// restart the task loop
+		}
+#endif
+
 		// Try to exchange data with the SBC
 		transferComplete = hadTimeout = hadReset = false;
 		do
@@ -90,12 +155,21 @@ void SbcInterface::Init() noexcept
 			switch (state)
 			{
 			case TransferState::doingFullTransfer:
-				hadTimeout = !TaskBase::TakeIndexed(NotifyIndices::SbcInterface, isConnected ? SpiConnectionTimeout : TaskBase::TimeoutUnlimited);
-				hadSbcTimeout = hadTimeout && millis() - transferStartTime < SpiConnectionTimeout + SbcYieldTimeout;
+#if SUPPORTS_SBC_OVER_USB
+				// When USB SBC is supported but not connected over SPI, use a short timeout so we can poll for M576.1
+				if (!isConnected && transfer.GetTransportType() == SbcTransportType::spi)
+				{
+					hadTimeout = !TaskBase::TakeIndexed(NotifyIndices::SbcInterface, SbcConnectionTimeout);
+					hadSbcTimeout = false;
+					break;
+				}
+#endif
+				hadTimeout = !TaskBase::TakeIndexed(NotifyIndices::SbcInterface, isConnected ? SbcConnectionTimeout : TaskBase::TimeoutUnlimited);
+				hadSbcTimeout = hadTimeout && millis() - transferStartTime < SbcConnectionTimeout + SbcYieldTimeout;
 				break;
 			case TransferState::doingPartialTransfer:
-				hadTimeout = !TaskBase::TakeIndexed(NotifyIndices::SbcInterface, SpiTransferTimeout);
-				hadSbcTimeout = hadTimeout && millis() - transferStartTime < SpiTransferTimeout + SbcYieldTimeout;
+				hadTimeout = !TaskBase::TakeIndexed(NotifyIndices::SbcInterface, SbcTransferTimeout);
+				hadSbcTimeout = hadTimeout && millis() - transferStartTime < SbcTransferTimeout + SbcYieldTimeout;
 				break;
 			case TransferState::finishingTransfer:
 				busy = true;
@@ -124,11 +198,28 @@ void SbcInterface::Init() noexcept
 				{
 					numSbcTimeouts++;
 				}
-				reprap.GetPlatform().MessageF(NetworkInfoMessage, "Lost connection to SBC due to %s timeout\n", hadSbcTimeout ? "remote" : "local");
+#if SUPPORTS_SBC_OVER_USB
+				if (transfer.GetTransportType() == SbcTransportType::usb)
+				{
+					SerialCDC *dev = transfer.GetUsbDevice();
+					if (dev != nullptr && !dev->IsConnected())
+					{
+						reprap.GetPlatform().Message(NetworkInfoMessage, "Lost connection to SBC (port closed)\n");
+					}
+					else
+					{
+						reprap.GetPlatform().Message(NetworkInfoMessage, "Lost connection to SBC (timeout)\n");
+					}
+				}
+				else
+#endif
+				{
+					reprap.GetPlatform().Message(NetworkInfoMessage, "Lost connection to SBC (timeout)\n");
+				}
 			}
 			else
 			{
-				reprap.GetPlatform().Message(NetworkInfoMessage, "Lost connection to SBC due to connection reset\n");
+				reprap.GetPlatform().Message(NetworkInfoMessage, "Lost connection to SBC (connection reset)\n");
 			}
 
 			// Invalidate local resources
@@ -138,6 +229,21 @@ void SbcInterface::Init() noexcept
 				// Let the main task invalidate resources before processing new data
 				TaskBase::TakeIndexed(NotifyIndices::SbcInterface, SbcYieldTimeout);
 			}
+
+#if SUPPORTS_SBC_OVER_USB
+			// On USB disconnect, exit direct mode and reinit the USB GCode device
+			if (transfer.GetTransportType() == SbcTransportType::usb)
+			{
+				if (SerialCDC *dev = transfer.GetUsbDevice())
+				{
+					dev->EndDirectMode();
+				}
+				reprap.GetPlatform().ReinitUsbDevice(usbDeviceIndex);
+				transfer.ResetConnection(true);
+
+				continue;		// restart the task loop
+			}
+#endif
 		}
 
 		// Deal with received data
@@ -146,7 +252,8 @@ void SbcInterface::Init() noexcept
 			if (!isConnected)
 			{
 				isConnected = true;
-				reprap.GetPlatform().Message(NetworkInfoMessage, "Connection to SBC established!\n");
+				reprap.GetPlatform().MessageF(NetworkInfoMessage, "Connection to SBC established over %s!\n",
+					transfer.GetTransportType() == SbcTransportType::usb ? "USB" : "SPI");
 			}
 
 			// Handle exchanged data and kick off the next transfer
@@ -155,7 +262,21 @@ void SbcInterface::Init() noexcept
 		}
 		else if (hadTimeout || hadReset)
 		{
-			// Reset the SPI connection if no data could be exchanged
+#if SUPPORTS_SBC_OVER_USB
+			// If USB transport failed, always exit direct mode and reset to SPI
+			if (transfer.GetTransportType() == SbcTransportType::usb)
+			{
+				if (SerialCDC *dev = transfer.GetUsbDevice())
+				{
+					dev->EndDirectMode();
+				}
+				reprap.GetPlatform().ReinitUsbDevice(usbDeviceIndex);
+				transfer.ResetConnection(true);
+
+				continue;
+			}
+#endif
+			// SPI: reset the connection if no data could be exchanged
 			transfer.ResetConnection(hadTimeout);
 		}
 	}
@@ -172,7 +293,7 @@ void SbcInterface::ExchangeData() noexcept
 		{
 			if (reprap.Debug(Module::SbcInterface))
 			{
-				debugPrintf("Error trying to read next SPI packet\n");
+				debugPrintf("Error trying to read next packet\n");
 			}
 			break;
 		}
@@ -247,7 +368,7 @@ void SbcInterface::ExchangeData() noexcept
 
 				// Make sure no existing codes are overwritten
 				uint16_t bufferedCodeSize = sizeof(BufferedCodeHeader) + packet->length;
-				if ((txEnd == 0 && bufferedCodeSize > max<uint16_t>(rxPointer, SpiCodeBufferSize - txPointer)) ||
+				if ((txEnd == 0 && bufferedCodeSize > max<uint16_t>(rxPointer, SbcCodeBufferSize - txPointer)) ||
 						(txEnd != 0 && bufferedCodeSize > rxPointer - txPointer))
 				{
 #if false
@@ -259,7 +380,7 @@ void SbcInterface::ExchangeData() noexcept
 				}
 
 				// Overlap if necessary
-				if (txPointer + bufferedCodeSize > SpiCodeBufferSize)
+				if (txPointer + bufferedCodeSize > SbcCodeBufferSize)
 				{
 					txEnd = txPointer;
 					txPointer = 0;
@@ -296,7 +417,7 @@ void SbcInterface::ExchangeData() noexcept
 				OutputBuffer *outBuf = reprap.GetModelResponse(nullptr, key.c_str(), flags.c_str());
 				if (outBuf != nullptr && outBuf->Length() > SbcTransferBufferSize - sizeof(PacketHeader) - sizeof(StringHeader))
 				{
-					if (!transfer.WriteObjectModel(nullptr))
+					if (transfer.WriteObjectModel(nullptr))
 					{
 						// Cannot store this object model response even if we wanted to
 						reprap.GetPlatform().MessageF(ErrorMessage, "Cannot store excessively long object model response, discarding request (total length %d, key %s, flags %s)", outBuf->Length(), key.c_str(), flags.c_str());
@@ -526,7 +647,7 @@ void SbcInterface::ExchangeData() noexcept
 		// Evaluate an expression
 		case SbcRequest::EvaluateExpression:
 		{
-			String<MaxGCodeLength> expression;
+			String<MaxSbcExpressionLength> expression;
 			const GCodeChannel channel = transfer.ReadEvaluateExpression(packet->length, expression.GetRef());
 			if (channel.IsValid())
 			{
@@ -543,7 +664,7 @@ void SbcInterface::ExchangeData() noexcept
 					MutexLocker lock(gb->mutex, SbcYieldTimeout);
 					if (lock.IsAcquired())
 					{
-						ExpressionParser parser(gb, expression.c_str(), expression.c_str() + expression.strlen());
+						ExpressionParser parser(gb, expression.c_str());
 						const ExpressionValue val = parser.Parse();
 						parser.CheckForExtraCharacters();
 						if (val.GetType() == TypeCode::HeapArray)
@@ -554,7 +675,7 @@ void SbcInterface::ExchangeData() noexcept
 							{
 								ObjectExplorationContext context;
 								ReportHeapArrayAsJson(json, context, nullptr, val.ahVal, "");
-								packetAcknowledged = transfer.WriteEvaluationResult(expression.c_str(), json);
+								packetAcknowledged = transfer.WriteEvaluationResult(channel, expression.c_str(), json);
 							}
 							else
 							{
@@ -570,7 +691,7 @@ void SbcInterface::ExchangeData() noexcept
 								ObjectExplorationContext context;
 								context.AddIndex(val.param >> 8);
 								val.omVal->ReportItemAsJsonFull(json, context, nullptr, val, "");
-								packetAcknowledged = transfer.WriteEvaluationResult(expression.c_str(), json);
+								packetAcknowledged = transfer.WriteEvaluationResult(channel, expression.c_str(), json);
 							}
 							else
 							{
@@ -580,7 +701,7 @@ void SbcInterface::ExchangeData() noexcept
 						else
 						{
 							// Write plain result
-							packetAcknowledged = transfer.WriteEvaluationResult(expression.c_str(), val);
+							packetAcknowledged = transfer.WriteEvaluationResult(channel, expression.c_str(), val);
 						}
 					}
 					else
@@ -593,8 +714,9 @@ void SbcInterface::ExchangeData() noexcept
 					// Get the error message and send it back to DSF
 					String<StringLength100> errorMessage;
 					e.GetMessage(errorMessage.GetRef(), nullptr);
-					packetAcknowledged = transfer.WriteEvaluationError(expression.c_str(), errorMessage.c_str());
+					packetAcknowledged = transfer.WriteEvaluationError(channel, expression.c_str(), errorMessage.c_str());
 				}
+				burstModeStartTime = millis();
 			}
 			else
 			{
@@ -613,7 +735,26 @@ void SbcInterface::ExchangeData() noexcept
 				MessageType type;
 				if (transfer.ReadMessage(type, buf))
 				{
-					// FIXME Push flag is not supported yet
+					// Check if this is a targeted reply to a single channel whose code is executing on the SBC
+					// (e.g. a response to M121 retransmitted by DSF). If so, mark the GB as finished.
+					if ((type & PushFlag) == 0)
+					{
+						const Bitmap<uint32_t> destBits((uint32_t)type & (uint32_t)DestinationsMask);
+						for (size_t channel = 0; channel < NumGCodeChannels; channel++)
+						{
+							if (destBits.IsOnlyBitSet(channel))
+							{
+								GCodeBuffer *const gb = reprap.GetGCodes().GetGCodeBuffer(GCodeChannel(channel));
+								if (gb != nullptr && gb->IsExecutingOnSbc())
+								{
+									gb->SetFinished(true);
+								}
+								break;
+							}
+						}
+					}
+
+					// Output message to the target
 					reprap.GetPlatform().Message(type, buf);
 				}
 				else
@@ -716,7 +857,7 @@ void SbcInterface::ExchangeData() noexcept
 		{
 			bool createVariable;
 			String<MaxVariableNameLength> varName;
-			String<MaxGCodeLength> expression;
+			String<MaxGCodeStringLength> expression;
 			const GCodeChannel channel = transfer.ReadSetVariable(createVariable, varName.GetRef(), expression.GetRef());
 
 			// Make sure we can access the gb safely...
@@ -744,7 +885,7 @@ void SbcInterface::ExchangeData() noexcept
 			const bool isGlobal = StringStartsWith(varName.c_str(), "global.");
 			if (!isGlobal && !StringStartsWith(varName.c_str(), "var."))
 			{
-				packetAcknowledged = transfer.WriteSetVariableError(varName.c_str(), "expected a global or local variable");
+				packetAcknowledged = transfer.WriteSetVariableError(channel, varName.c_str(), "expected a global or local variable");
 				break;
 			}
 			WriteLockedPointer<VariableSet> vset = (isGlobal) ? reprap.GetGlobalVariablesForWriting() : WriteLockedPointer<VariableSet>(nullptr, &gb->GetVariables());
@@ -797,7 +938,7 @@ void SbcInterface::ExchangeData() noexcept
 
 					if (hadError)
 					{
-						packetAcknowledged = transfer.WriteSetVariableError(varName.c_str(), expression.c_str());
+						packetAcknowledged = transfer.WriteSetVariableError(channel, varName.c_str(), expression.c_str());
 						break;
 					}
 
@@ -812,21 +953,21 @@ void SbcInterface::ExchangeData() noexcept
 				// For now we don't allow an existing variable to be reassigned using a 'var' or 'global' statement. We may need to allow it for 'global' statements.
 				// Save memory by re-using 'expression' to capture the error message
 				expression.printf("variable '%s' already exists", varName.c_str());
-				packetAcknowledged = transfer.WriteSetVariableError(varName.c_str(), expression.c_str());
+				packetAcknowledged = transfer.WriteSetVariableError(channel, varName.c_str(), expression.c_str());
 				break;
 			}
 			if (!createVariable && v == nullptr)
 			{
 				// Save memory by re-using 'expression' to capture the error message
 				expression.printf("unknown variable '%s'", varName.c_str());
-				packetAcknowledged = transfer.WriteSetVariableError(varName.c_str(), expression.c_str());
+				packetAcknowledged = transfer.WriteSetVariableError(channel, varName.c_str(), expression.c_str());
 				break;
 			}
 
 			// Evaluate the expression and assign it
 			try
 			{
-				ExpressionParser parser(gb, expression.c_str(), expression.c_str() + expression.strlen());
+				ExpressionParser parser(gb, expression.c_str());
 				ExpressionValue ev = parser.Parse();
 				if (v == nullptr)
 				{
@@ -850,7 +991,7 @@ void SbcInterface::ExchangeData() noexcept
 					{
 						ObjectExplorationContext context;
 						ReportHeapArrayAsJson(json, context, nullptr, ev.ahVal, "");
-						packetAcknowledged = transfer.WriteSetVariableResult(varName.c_str(), json);
+						packetAcknowledged = transfer.WriteSetVariableResult(channel, varName.c_str(), json);
 					}
 					else
 					{
@@ -866,7 +1007,7 @@ void SbcInterface::ExchangeData() noexcept
 						ObjectExplorationContext context;
 						context.AddIndex(ev.param >> 8);
 						ev.omVal->ReportItemAsJsonFull(json, context, nullptr, ev, "");
-						packetAcknowledged = transfer.WriteSetVariableResult(varName.c_str(), json);
+						packetAcknowledged = transfer.WriteSetVariableResult(channel, varName.c_str(), json);
 					}
 					else
 					{
@@ -876,7 +1017,7 @@ void SbcInterface::ExchangeData() noexcept
 				else
 				{
 					// Write plain result
-					packetAcknowledged = transfer.WriteSetVariableResult(varName.c_str(), ev);
+					packetAcknowledged = transfer.WriteSetVariableResult(channel, varName.c_str(), ev);
 				}
 
 				if (isGlobal)
@@ -889,8 +1030,9 @@ void SbcInterface::ExchangeData() noexcept
 				// Get the error message and send it back to DSF
 				// Save memory by re-using 'expression' to capture the error message
 				e.GetMessage(expression.GetRef(), nullptr);
-				packetAcknowledged = transfer.WriteSetVariableError(varName.c_str(), expression.c_str());
+				packetAcknowledged = transfer.WriteSetVariableError(channel, varName.c_str(), expression.c_str());
 			}
+			burstModeStartTime = millis();
 			break;
 		}
 
@@ -924,6 +1066,7 @@ void SbcInterface::ExchangeData() noexcept
 			// Try to delete the variable again
 			WriteLockedPointer<VariableSet> vset = WriteLockedPointer<VariableSet>(nullptr, &gb->GetVariables());
 			vset.Ptr()->Delete(varName.c_str());
+			burstModeStartTime = millis();
 			break;
 		}
 
@@ -944,7 +1087,9 @@ void SbcInterface::ExchangeData() noexcept
 		case SbcRequest::FileDeleteResult:
 		{
 			bool success = transfer.ReadBoolean();
-			if (fileOperation == FileOperation::deleteFileOrDirectory || fileOperation == FileOperation::deleteFileOrDirectoryRecursively)
+			if (fileOperation == FileOperation::deleteFileOrDirectory
+				|| fileOperation == FileOperation::deleteFileOrDirectoryRecursively
+				|| fileOperation == FileOperation::secureDeleteFile)
 			{
 				fileSuccess = success;
 				fileOperation = FileOperation::none;
@@ -1034,6 +1179,52 @@ void SbcInterface::ExchangeData() noexcept
 			break;
 		}
 
+		// Request to update the last G-code result
+		case SbcRequest::SetLastCodeResult:
+		{
+			GCodeResult result;
+			const GCodeChannel channel = transfer.ReadSetLastCodeResult(result);
+
+			// Make sure we can access the gb safely...
+			if (!channel.IsValid())
+			{
+				REPORT_INTERNAL_ERROR;
+				break;
+			}
+
+			GCodeBuffer * const gb = reprap.GetGCodes().GetGCodeBuffer(channel);
+			if (gb == nullptr)
+			{
+				REPORT_INTERNAL_ERROR;
+				break;
+			}
+
+			MutexLocker lock(gb->mutex, SbcYieldTimeout);
+			if (!lock.IsAcquired())
+			{
+				packetAcknowledged = false;
+				break;
+			}
+
+			gb->SetLastResult(result);
+			break;
+		}
+
+		// Called when keys provided exclusively by DSF in SBC mode have changed
+		case SbcRequest::ObjectModelKeyChanged:
+		{
+			const char *key = transfer.ReadData(packet->length);
+			if (StringEqualsIgnoreCase(key, "network"))
+			{
+				reprap.NetworkUpdated();
+			}
+			else if (StringEqualsIgnoreCase(key, "volumes"))
+			{
+				reprap.VolumesUpdated();
+			}
+			break;
+		}
+
 		// Invalid request
 		default:
 			(void)transfer.ReadData(packet->length);		// skip the packet content
@@ -1052,16 +1243,31 @@ void SbcInterface::ExchangeData() noexcept
 	}
 
 	// Check if we can wait a short moment to reduce CPU load on the SBC
-	if (!skipNextDelay && numEvents < numMaxEvents && !fileOperationPending && fileOperation == FileOperation::none)
+	const bool inBurstMode = (burstModeStartTime != 0 && millis() - burstModeStartTime < burstModeWindow);
+	if (!inBurstMode && numEvents < numMaxEvents && !fileOperationPending && fileOperation == FileOperation::none)
 	{
+		// Normal mode: wait the full delay
 		delaying = true;
 		if (!TaskBase::TakeIndexed(NotifyIndices::SbcInterface, (numOpenFiles != 0) ? maxFileOpenDelay : maxDelayBetweenTransfers))
 		{
 			delaying = false;
 		}
 	}
+	else if (inBurstMode && numEvents < numMaxEvents && !fileOperationPending && fileOperation == FileOperation::none)
+	{
+		// Burst mode with no pending events: use a short delay to avoid busy-waiting
+		delaying = true;
+		if (!TaskBase::TakeIndexed(NotifyIndices::SbcInterface, burstModeDelay))
+		{
+			delaying = false;
+		}
+	}
+	// else: events pending or file operation in progress, proceed immediately
 	numEvents = 0;
-	skipNextDelay = false;
+	if (burstModeStartTime != 0 && millis() - burstModeStartTime >= burstModeWindow)
+	{
+		burstModeStartTime = 0;
+	}
 
 	// Send code replies and generic messages
 	if (!gcodeReply.IsEmpty())
@@ -1085,7 +1291,7 @@ void SbcInterface::ExchangeData() noexcept
 		TaskCriticalSectionLocker locker;
 		if (!codeBufferAvailable || sendBufferUpdate)
 		{
-			const uint16_t bufferSpace = (txEnd == 0) ? max<uint16_t>(rxPointer, SpiCodeBufferSize - txPointer) : rxPointer - txPointer;
+			const uint16_t bufferSpace = (txEnd == 0) ? max<uint16_t>(rxPointer, SbcCodeBufferSize - txPointer) : rxPointer - txPointer;
 			sendBufferUpdate = !transfer.WriteCodeBufferUpdate(bufferSpace);
 		}
 	}
@@ -1104,6 +1310,9 @@ void SbcInterface::ExchangeData() noexcept
 			break;
 		case FileOperation::deleteFileOrDirectoryRecursively:
 			fileOperationPending = !transfer.WriteDeleteFileOrDirectory(filePath, true);
+			break;
+		case FileOperation::secureDeleteFile:
+			fileOperationPending = !transfer.WriteSecureDeleteFile(filePath);
 			break;
 
 		case FileOperation::openRead:
@@ -1192,7 +1401,7 @@ void SbcInterface::ExchangeData() noexcept
 			{
 				if (reprap.Debug(Module::SbcInterface))
 				{
-					debugPrintf("Requesting macro file '%s' (fromCode: %s)\n", requestedMacroFile, fromCode ? "true" : "false");
+					debugPrintf("Requesting macro file '%s' (channel %d, fromCode %s)\n", requestedMacroFile, (int)i, fromCode ? "true" : "false");
 				}
 				gb->MacroRequestSent();
 				gb->Invalidate();
@@ -1205,9 +1414,9 @@ void SbcInterface::ExchangeData() noexcept
 			MutexLocker gbLock(gb->mutex, SbcYieldTimeout);
 			if (gbLock.IsAcquired())
 			{
-				if (gb->GetChannel() != GCodeChannel::Daemon)
+				if (gb->GetChannel() != GCodeChannel::Daemon && (gb->IsMacroRequestPending() || gb->HasJustStartedMacro()))
 				{
-					skipNextDelay |= gb->IsMacroRequestPending() || gb->HasJustStartedMacro();
+					burstModeStartTime = millis();
 				}
 
 				// Handle file abort requests
@@ -1262,7 +1471,7 @@ void SbcInterface::ExchangeData() noexcept
 					{
 						if (reprap.Debug(Module::SbcInterface))
 						{
-							debugPrintf("Requesting non-blocking macro file '%s' (fromCode: %s)\n", requestedMacroFile, fromCode ? "true" : "false");
+							debugPrintf("Requesting non-blocking macro file '%s' (channel %i, fromCode %s)\n", requestedMacroFile, (int)i, fromCode ? "true" : "false");
 						}
 						gb->MacroRequestSent();
 						gb->Invalidate();
@@ -1276,13 +1485,19 @@ void SbcInterface::ExchangeData() noexcept
 					{
 						// Unfortunately, the explicit line number is stripped from the G-code data when we get here.
 						// That means we need to prepend it again before the full code is sent over to the SBC
-						String<MaxGCodeLength> code;
+						String<MaxGCodeStringLength> code;
 						code.printf("N%" PRIu32 " %s", gb->GetExplicitLineNumber(), gb->DataStart());
-						gb->SetFinished(transfer.WriteDoCode(channel, code.c_str(), code.strlen()));
+						if (transfer.WriteDoCode(channel, code.c_str(), code.strlen()))
+						{
+							gb->SentToSbc();
+						}
 					}
 					else
 					{
-						gb->SetFinished(transfer.WriteDoCode(channel, gb->DataStart(), gb->DataLength()));
+						if (transfer.WriteDoCode(channel, gb->DataStart(), gb->DataLength()))
+						{
+							gb->SentToSbc();
+						}
 					}
 				}
 			}
@@ -1290,7 +1505,7 @@ void SbcInterface::ExchangeData() noexcept
 	}
 
 	// Send pause notification on demand
-	if (reportPause && transfer.WritePrintPaused(pauseFilePosition, pauseReason))
+	if (reportPause && transfer.WritePrintPaused(pauseFilePosition, pauseFilePosition2, pauseReason))
 	{
 		reportPause = false;
 	}
@@ -1348,6 +1563,15 @@ void SbcInterface::ExchangeData() noexcept
 				break;
 			}
 			case SbcRequest::StartIap:	// Start the IAP binary
+#if SUPPORTS_SBC_OVER_USB
+				// Cleanly disconnect USB before IAP brings up its own bare-metal stack. All IAP chunks
+				// have arrived by now, so the link is no longer needed and the host gets a clean detach
+				if (transfer.GetTransportType() == SbcTransportType::usb)
+				{
+					reprap.GetPlatform().DisconnectUsb();
+					StopUsbTask();
+				}
+#endif
 				reprap.StartIap(nullptr);
 				break;
 			default:						// Other packet types are not supported while IAP is being written
@@ -1360,7 +1584,9 @@ void SbcInterface::ExchangeData() noexcept
 
 void SbcInterface::InvalidateResources() noexcept
 {
-	rxPointer = txPointer = txEnd = 0;
+	txEnd = 0;
+	txPointer = 0;
+	rxPointer = 0;
 	sendBufferUpdate = true;
 
 	if (fileOperation != FileOperation::none)
@@ -1388,6 +1614,11 @@ void SbcInterface::InvalidateResources() noexcept
 			break;
 		}
 
+		if (gb->IsExecutingOnSbc())
+		{
+			gb->SetFinished(true);
+		}
+
 		if (gb->IsWaitingForMacro())
 		{
 			gb->ResolveMacroRequest(true, false);
@@ -1413,7 +1644,14 @@ void SbcInterface::InvalidateResources() noexcept
 void SbcInterface::Diagnostics(const StringRef& reply) noexcept
 {
 	reply.copy( "=== SBC interface ===");
-	transfer.Diagnostics(reply);
+	if (isConnected)
+	{
+		transfer.Diagnostics(reply);
+	}
+	else
+	{
+		reply.lcat("Not connected");
+	}
 	reply.lcatf("State: %d, disconnects: %" PRIu32 ", timeouts: %" PRIu32 " total, %" PRIu32 " by SBC, IAP RAM available 0x%05" PRIx32, (int)state, numDisconnects, numTimeouts, numSbcTimeouts, iapRamAvailable);
 	reply.lcatf("Buffer RX/TX: %d/%d-%d, open files: %u", (int)rxPointer, (int)txPointer, (int)txEnd, numOpenFiles);
 #ifdef TRACK_FILE_CODES
@@ -1423,14 +1661,40 @@ void SbcInterface::Diagnostics(const StringRef& reply) noexcept
 
 GCodeResult SbcInterface::HandleM576(GCodeBuffer& gb, const StringRef& reply) noexcept
 {
+	if (gb.GetCommandFraction() == 1)
+	{
+#if SUPPORTS_SBC_OVER_USB
+		if (IsConnected())
+		{
+			reply.copy("SBC interface already connected");
+			return GCodeResult::error;
+		}
+		if (!gb.Seen('P'))
+		{
+			reply.copy("Protocol version parameter P required");
+			return GCodeResult::error;
+		}
+		const uint16_t protocolVersion = (uint16_t)gb.GetUIValue();
+		if (protocolVersion != SbcProtocolVersion)
+		{
+			reply.printf("Unsupported protocol version %u (expected %u)", protocolVersion, SbcProtocolVersion);
+			return GCodeResult::error;
+		}
+		return reprap.SwitchToUsbSbcMode(gb, reply);
+#else
+		reply.copy("USB SBC mode not supported on this board");
+		return GCodeResult::error;
+#endif
+	}
+
 	bool seen = false;
 
 	if (gb.Seen('S'))
 	{
 		uint32_t sParam = gb.GetUIValue();
-		if (sParam > SpiConnectionTimeout)
+		if (sParam > SbcConnectionTimeout)
 		{
-			reply.printf("SPI transfer delay must not exceed %" PRIu32 "ms", SpiConnectionTimeout);
+			reply.printf("SBC transfer delay must not exceed %" PRIu32 "ms", SbcConnectionTimeout);
 			return GCodeResult::error;
 		}
 		maxDelayBetweenTransfers = sParam;
@@ -1440,9 +1704,9 @@ GCodeResult SbcInterface::HandleM576(GCodeBuffer& gb, const StringRef& reply) no
 	if (gb.Seen('F'))
 	{
 		uint32_t fParam = gb.GetUIValue();
-		if (fParam > SpiConnectionTimeout)
+		if (fParam > SbcConnectionTimeout)
 		{
-			reply.printf("SPI transfer delay must not exceed %" PRIu32 "ms", SpiConnectionTimeout);
+			reply.printf("SBC transfer delay must not exceed %" PRIu32 "ms", SbcConnectionTimeout);
 			return GCodeResult::error;
 		}
 		maxFileOpenDelay = fParam;
@@ -1455,12 +1719,47 @@ GCodeResult SbcInterface::HandleM576(GCodeBuffer& gb, const StringRef& reply) no
 		seen = true;
 	}
 
+	if (gb.Seen('B'))
+	{
+		burstModeWindow = gb.GetUIValue();
+		seen = true;
+	}
+
+	if (gb.Seen('D'))
+	{
+		burstModeDelay = gb.GetUIValue();
+		seen = true;
+	}
+
 	if (!seen)
 	{
-		reply.printf("Max delay between full SBC transfers %" PRIu32 "ms (%" PRIu32 "ms during file IO), max number of events before a delay is skipped: %" PRIu32, maxDelayBetweenTransfers, maxFileOpenDelay, numMaxEvents);
+		reply.printf("Max delay between full SBC transfers %" PRIu32 "ms (%" PRIu32 "ms during file IO), max events before skip: %" PRIu32 ", burst window: %" PRIu32 "ms, burst delay: %" PRIu32 "ms",
+			maxDelayBetweenTransfers, maxFileOpenDelay, numMaxEvents, burstModeWindow, burstModeDelay);
 	}
 	return GCodeResult::ok;
 }
+
+#if SUPPORTS_SBC_OVER_USB
+
+void SbcInterface::RequestUsbSwitch(SerialCDC *dev, unsigned int usbDevIndex) noexcept
+{
+	pendingUsbDevice = dev;
+	usbDeviceIndex = usbDevIndex;
+	sbcTask->Give(NotifyIndices::SbcInterface);		// wake the SBC task directly, bypassing IsConnected() check in EventOccurred
+}
+
+// Freeze the SBC task so a deliberate USB teardown isn't undone by its connection-loss recovery,
+// which would EndDirectMode and ReinitUsbDevice and so re-attach the device. No-op when the SBC
+// task itself is the caller, as it cannot suspend itself
+void SbcInterface::Suspend() noexcept
+{
+	if (sbcTask != nullptr && TaskBase::GetCallerTaskHandle() != sbcTask)
+	{
+		sbcTask->Suspend();
+	}
+}
+
+#endif
 
 bool SbcInterface::FillBuffer(GCodeBuffer &gb) noexcept
 {
@@ -1488,7 +1787,7 @@ bool SbcInterface::FillBuffer(GCodeBuffer &gb) noexcept
 				readPointer += bufHeader->length;
 
 				RRF_ASSERT(bufHeader->length > 0);
-				RRF_ASSERT(readPointer <= SpiCodeBufferSize);
+				RRF_ASSERT(readPointer <= SbcCodeBufferSize);
 
 				if (bufHeader->isPending)
 				{
@@ -1527,12 +1826,14 @@ bool SbcInterface::FillBuffer(GCodeBuffer &gb) noexcept
 							if (readPointer == txPointer && txEnd == 0)
 							{
 								// Buffer completely read, reset RX/TX pointers
-								rxPointer = txPointer = 0;
+								txPointer = 0;
+								rxPointer = 0;
 							}
 							else if (readPointer == txEnd)
 							{
 								// Read last code before overlapping, restart from the beginning
-								rxPointer = txEnd = 0;
+								txEnd = 0;
+								rxPointer = 0;
 							}
 							else
 							{
@@ -1552,7 +1853,8 @@ bool SbcInterface::FillBuffer(GCodeBuffer &gb) noexcept
 					if (updateRxPointer)
 					{
 						// Skipped non-pending codes, restart from the beginning
-						rxPointer = txEnd = 0;
+						txEnd = 0;
+						rxPointer = 0;
 						sendBufferUpdate = true;
 					}
 
@@ -1608,6 +1910,28 @@ bool SbcInterface::DeleteFileOrDirectory(const char *fileOrDirectory, bool recur
 	if (!DoFileOperation(recursive ? FileOperation::deleteFileOrDirectoryRecursively : FileOperation::deleteFileOrDirectory))
 	{
 		reprap.GetPlatform().MessageF(ErrorMessage, "Timeout while trying to delete %s\n", fileOrDirectory);
+		return false;
+	}
+
+	// Return the result
+	return fileSuccess;
+}
+
+bool SbcInterface::SecureDeleteFile(const char *filename) noexcept
+{
+	// Don't do anything if the SBC is not connected
+	if (!IsConnected())
+	{
+		return false;
+	}
+
+	// Set up the request content
+	MutexLocker locker(fileMutex);
+
+	filePath = filename;
+	if (!DoFileOperation(FileOperation::secureDeleteFile))
+	{
+		reprap.GetPlatform().MessageF(ErrorMessage, "Timeout while trying to securely delete %s\n", filename);
 		return false;
 	}
 
@@ -1788,7 +2112,7 @@ bool SbcInterface::DoFileOperation(FileOperation f) noexcept
 		sbcTask->Give(NotifyIndices::SbcInterface);
 	}
 
-	const bool rslt = fileSemaphore.Take(SpiMaxRequestTime);
+	const bool rslt = fileSemaphore.Take(SbcMaxRequestTime);
 	if (!rslt)
 	{
 		fileOperation = FileOperation::none;
@@ -1885,8 +2209,8 @@ void SbcInterface::DefragmentBufferedCodes() noexcept
 	TaskCriticalSectionLocker locker;
 	if (rxPointer != txPointer || txEnd != 0)
 	{
-		const uint16_t bufferSpace = (txEnd == 0) ? max<uint16_t>(rxPointer, SpiCodeBufferSize - txPointer) : rxPointer - txPointer;
-		if (bufferSpace > MaxCodeBufferSize)
+		const uint16_t bufferSpace = (txEnd == 0) ? max<uint16_t>(rxPointer, SbcCodeBufferSize - txPointer) : rxPointer - txPointer;
+		if (bufferSpace > MaxGCodeBinaryLength)
 		{
 			// There is still enough space left for at least one more code, don't worry about fragmentation yet
 			return;
@@ -1902,12 +2226,12 @@ void SbcInterface::DefragmentBufferedCodes() noexcept
 			// Ring buffer overlapped (rxPointer..txEnd, 0..txPointer)
 			if (!DefragmentCodeBlock(rxPointer, txEnd) &&
 				!DefragmentCodeBlock(0, txPointer) &&
-				SpiCodeBufferSize - (size_t)txEnd > MaxCodeBufferSize)
+				SbcCodeBufferSize - (size_t)txEnd > MaxGCodeBinaryLength)
 			{
 				size_t endBufferSize = txEnd - rxPointer;
-				memmoveu32(reinterpret_cast<uint32_t*>(codeBuffer + SpiCodeBufferSize - endBufferSize), reinterpret_cast<uint32_t*>(codeBuffer + rxPointer), endBufferSize / sizeof(uint32_t));
-				rxPointer = SpiCodeBufferSize - endBufferSize;
-				txEnd = SpiCodeBufferSize;
+				memmoveu32(reinterpret_cast<uint32_t*>(codeBuffer + SbcCodeBufferSize - endBufferSize), reinterpret_cast<uint32_t*>(codeBuffer + rxPointer), endBufferSize / sizeof(uint32_t));
+				rxPointer = SbcCodeBufferSize - endBufferSize;
+				txEnd = SbcCodeBufferSize;
 				sendBufferUpdate = true;
 			}
 		}
@@ -1992,14 +2316,16 @@ void SbcInterface::InvalidateBufferedCodes(GCodeChannel channel) noexcept
 				if (readPointer == txPointer && txEnd == 0)
 				{
 					// Buffer is empty again, reset the pointers
-					rxPointer = txPointer = 0;
+					txPointer = 0;
+					rxPointer = 0;
 					break;
 				}
 				else if (readPointer == txEnd)
 				{
 					// Invalidated last code before overlapping, continue from the beginning
 					readPointer = 0;
-					rxPointer = txEnd = 0;
+					txEnd = 0;
+					rxPointer = 0;
 				}
 				else
 				{
