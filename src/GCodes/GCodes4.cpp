@@ -868,7 +868,6 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 		{
 			// Move to the current probe point
 			isRetrying = false;
-			Move& move = reprap.GetMove();
 			const HeightMap& hm = move.AccessHeightMap();
 			if (hm.CanProbePoint(gridAxis0Index, gridAxis1Index))
 			{
@@ -1791,7 +1790,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 	            float dist = 0.0;
 	            straightProbeSettings.GetMovingAxes().Iterate([&](unsigned int axis, unsigned int) noexcept
 	            {
-	                const float d = ms.coords[axis] - straightProbeStartCoords[axis];
+	                const float d = ms.raw.coords[axis] - straightProbeStartCoords[axis];
 	                dist += d * d;
 	            });
 	            const float stoppedDistance = sqrtf(dist);
@@ -1807,9 +1806,9 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 	                // Back off to start and try again, re-entering at straightProbe1 so the
 	                // recovery timer fires again — exactly as probingAtPoint5 loops to probingAtPoint2a
 	                SetMoveBufferDefaults(ms);
-	                memcpyf(ms.coords, straightProbeStartCoords, MaxAxes);
-	                ms.feedRate = zp2->GetTravelSpeed();
-	                ms.linearAxesMentioned = ms.rotationalAxesMentioned = true;
+	                memcpyf(ms.raw.coords, straightProbeStartCoords, MaxAxes);
+	                ms.raw.feedRate = zp2->GetTravelSpeed();
+	                ms.raw.linearAxesMentioned = ms.raw.rotationalAxesMentioned = true;
 	                NewSegmentableMoveAvailable(ms);
 	                gb.SetState(GCodeState::straightProbe1);
 	                break;

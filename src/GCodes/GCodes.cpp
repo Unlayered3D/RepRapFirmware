@@ -2397,7 +2397,7 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 	// from near -180 takes the short path. The axis coordinate is allowed to drift past +/-180 over a long print, like
 	// RRF's other continuous-rotation axes. Skipping this (or doing it in machine space only) produced phantom multi-turn
 	// moves and OutOfMemory resets.
-	if (ms.moveType == 0)
+	if (ms.raw.moveType == 0)
 	{
 		const AxesBitmap shortestPathAxes = move.GetKinematics().GetShortestPathRotaryAxes();
 		if (shortestPathAxes.IsNonEmpty())

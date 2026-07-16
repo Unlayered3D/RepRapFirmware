@@ -352,8 +352,8 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 # define SUPPORT_MMU2S					0
 #endif
 
-#if SUPPORT_MMU2S && !HAS_AUX_DEVICES
-# error Cannot support MMU2S without aux devices
+#if SUPPORT_MMU2S && (NUM_ASYNC_CHANNELS == 0)
+# error Cannot support MMU2S without async channels
 #endif
 
 // Function to look up a pin name pass back the corresponding index into the pin table

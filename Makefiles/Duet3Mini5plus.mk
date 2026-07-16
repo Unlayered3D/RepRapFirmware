@@ -24,50 +24,26 @@ DUET3MINI_SRC_DIR := src
 DUET3MINI_LIBCPP_SRCS := $(shell find $(DUET3MINI_SRC_DIR)/libcpp -name '*.cpp' -o -name '*.cc' 2>/dev/null)
 DUET3MINI_LIBC_SRCS := $(shell find $(DUET3MINI_SRC_DIR)/libc -name '*.c' -o -name '*.cpp' 2>/dev/null)
 
-# Find all source files (excluding specified directories)
-DUET3MINI_CPP_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.cpp' \
-	! -path '*/libcpp/*' \
-	! -path '*/libc/*' \
-	! -path '*/Duet3_V06/*' \
-	! -path '*/Hardware/SAME70/*' \
-	! -path '*/Hardware/SAM4E/*' \
-	! -path '*/Hardware/SAM4S/*' \
-	! -path '*/DuetNG/*' \
-	! -path '*/Networking/W5500Ethernet/*' \
-	! -path '*/Pccb/*' \
-	! -path '*/DuetM/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/smtp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/snmp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/tftp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/lwiperf/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/sntp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/http/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/mqtt/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/netif/ppp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/doc/*')
+# Find all source files, then exclude specified directories using make's text functions.
+# NOTE: we deliberately do NOT filter with find's "! -path '*/dir/*'" here. Under the
+# Windows/msys2 make used for this build, the single-quoted glob patterns get expanded
+# against the working tree before find sees them (because dirs like src/libc and
+# src/Hardware/SAME70 exist), which makes find error out and return an empty list.
+# Collecting everything with a plain find and filtering in make is portable and avoids that.
+DUET3MINI_CPP_EXCL := /libcpp/ /libc/ /Duet3_V06/ /Hardware/SAME70/ /Hardware/SAM4E/ \
+	/Hardware/SAM4S/ /DuetNG/ /Networking/W5500Ethernet/ /Pccb/ /DuetM/ \
+	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
+	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ /Lwip/doc/
+DUET3MINI_CPP_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.cpp')
+DUET3MINI_CPP_SRCS := $(foreach f,$(DUET3MINI_CPP_SRCS),$(if $(strip $(foreach e,$(DUET3MINI_CPP_EXCL),$(findstring $(e),$(f)))),,$(f)))
 
-DUET3MINI_C_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.c' \
-	! -path '*/libc/*' \
-	! -path '*/SBC/*' \
-	! -path '*/Hardware/SAME70/*' \
-	! -path '*/Hardware/SAM4E/*' \
-	! -path '*/Hardware/SAM4S/*' \
-	! -path '*/DuetNG/*' \
-	! -path '*/Pccb/*' \
-	! -path '*/DuetM/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/smtp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/snmp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/tftp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/lwiperf/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/sntp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/http/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/mqtt/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/netif/ppp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/test/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/doc/*' \
-	! -path '*/MQTT_C/tests.c' \
-	! -path '*/MQTT_C/examples/*' \
-	! -path '*/MQTT_C/src/mqtt_pal.c')
+DUET3MINI_C_EXCL := /libc/ /SBC/ /Hardware/SAME70/ /Hardware/SAM4E/ /Hardware/SAM4S/ \
+	/DuetNG/ /Pccb/ /DuetM/ \
+	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
+	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ \
+	/Lwip/test/ /Lwip/doc/ /MQTT_C/tests.c /MQTT_C/examples/ /MQTT_C/src/mqtt_pal.c
+DUET3MINI_C_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.c')
+DUET3MINI_C_SRCS := $(foreach f,$(DUET3MINI_C_SRCS),$(if $(strip $(foreach e,$(DUET3MINI_C_EXCL),$(findstring $(e),$(f)))),,$(f)))
 
 # Include paths
 DUET3MINI_INCLUDES := \
@@ -252,7 +228,8 @@ $(DUET3MINI_TARGET_BIN): $(DUET3MINI_TARGET_ELF)
 $(DUET3MINI_TARGET_UF2): $(DUET3MINI_TARGET_BIN)
 	$(Q)echo "  UF2     $@"
 	$(Q)if [ -f Tools/uf2conv/uf2conv.py ]; then \
-		python3 Tools/uf2conv/uf2conv.py -b 0x4000 -c -o $@ $<; \
+		PY=$$(command -v python3 || command -v python); \
+		"$$PY" Tools/uf2conv/uf2conv.py -b 0x4000 -c -o $@ $<; \
 	else \
 		echo "uf2conv.py not found, skipping UF2 generation"; \
 		echo "Binary file is available at: $<"; \

@@ -326,8 +326,8 @@ inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 	return controllingDrivers[axis] != LogicalDrivesBitmap::MakeFromBits(axis);
 }
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
-				5.5f), xSkew(0.0f), ySkew(0.0f), xzSkew(0.0f), yzSkew(0.0f), xySkew(0.0f), bSkew(0.0f), degreesPerSegment(2.0f), modified(false) {
+		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), modified(false), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
+				5.5f), xSkew(0.0f), ySkew(0.0f), xzSkew(0.0f), yzSkew(0.0f), xySkew(0.0f), bSkew(0.0f), degreesPerSegment(2.0f) {
 
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
 	inverseMatrix.Fill(0.0);
@@ -418,7 +418,6 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 		Kinematics::Configure(mCode, gb, reply, error);
 		reply.catf(", %.2f deg/segment (P)", (double) degreesPerSegment);
 		reply.catf(", %smatrix:", ((modified) ? "modified " : ""));
-		const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();
 		const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
 		for (size_t axis = 0; axis < numVisibleAxes; ++axis) {
 			for (size_t motor = 0; motor < numTotalAxes; ++motor) {
@@ -470,10 +469,10 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 	float rotatedMachinePos[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = cos(M_PI / 180.0 * machinePos[3]);
-	float sinT5 = sin(M_PI / 180.0 * machinePos[3]);
-	float cosT1 = cos(M_PI / 180.0 * machinePos[4]);
-	float sinT1 = sin(M_PI / 180.0 * machinePos[4]);
+	float cosT5 = (float)cos(M_PI / 180.0 * machinePos[3]);
+	float sinT5 = (float)sin(M_PI / 180.0 * machinePos[3]);
+	float cosT1 = (float)cos(M_PI / 180.0 * machinePos[4]);
+	float sinT1 = (float)sin(M_PI / 180.0 * machinePos[4]);
 
 	//iterate over the axes to calculate real values
 	for (size_t i = 0; i < numTotalAxes; ++i) {
@@ -544,10 +543,10 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 	//we now have our rotated position, but we cant get ahead of ourelves and set the machine pos. We have to undo the rotations. :(
 	//first thing is to figure out what the rotations actually are. The rotations "rotated" doesnt mean anything...
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = cos(M_PI / 180.0 * rotatedPosition[3]);
-	float sinT5 = sin(M_PI / 180.0 * rotatedPosition[3]);
-	float cosT1 = cos(M_PI / 180.0 * rotatedPosition[4]);
-	float sinT1 = sin(M_PI / 180.0 * rotatedPosition[4]);
+	float cosT5 = (float)cos(M_PI / 180.0 * rotatedPosition[3]);
+	float sinT5 = (float)sin(M_PI / 180.0 * rotatedPosition[3]);
+	float cosT1 = (float)cos(M_PI / 180.0 * rotatedPosition[4]);
+	float sinT1 = (float)sin(M_PI / 180.0 * rotatedPosition[4]);
 
 	//Rotation matricies are orthagonal. R^-1 = R^T
 	//this is great since our matrices are not square lol :skull:
