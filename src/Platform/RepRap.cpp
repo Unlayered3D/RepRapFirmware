@@ -847,72 +847,30 @@ void RepRap::Spin() noexcept
 	}
 
 
-	if ((millis() - lastStatsSaveMs) > saveIntervalMs)
+	if (statsDirty && (millis() - lastStatsSaveMs) > saveIntervalMs)
 	{
 	    SaveStatistics();
 	    lastStatsSaveMs = millis();
+	    statsDirty = false;
 	}
 
+	// --- Lifetime usage / per-motor wear statistics ---
+	// Motor travel is drained from per-drive absolute-step accumulators. The DDA runs in motor space
+	// (CartesianToMotorSteps), so this is true per-motor travel and is correct on every kinematic.
 	static uint32_t lastUpdateMs = millis();
-
-	static float lastMachinePos[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-
-
-	uint32_t now2 = millis();
-
-
-	float dtSeconds =
-	    (now2 - lastUpdateMs) / 1000.0f;
-
-
+	const uint32_t now2 = millis();
+	const float dtSeconds = (now2 - lastUpdateMs) / 1000.0f;
 	lastUpdateMs = now2;
 
-	float deltaMachinePos[6];
-
-	//for all of the existing axes
-	float curMachinePos[gCodes->GetVisibleAxes()];
-
-	move->GetCurrentMachinePosition(curMachinePos, 0);
-
-
-	for(size_t i = 0; i < 6; i++){
-		float curAxesPos = 0;
-
-		if(i < gCodes->GetVisibleAxes()){
-			curAxesPos = curMachinePos[i];
-		}
-		//get the actual position value
-		//store the change
-		deltaMachinePos[i] = fabs(lastMachinePos[i] - curAxesPos);
-		//store the new value
-		lastMachinePos[i] = curAxesPos;
-
-	}
-
-
-	// Check all visible axes are homed
-	bool allHomed = true;
-	for (size_t i = 0; i < gCodes->GetVisibleAxes(); i++)
+	for (size_t drive = 0; drive < MaxAxesPlusExtruders; ++drive)
 	{
-	    if (!gCodes->IsAxisHomed(i))
-	    {
-	        allHomed = false;
-	        break;
-	    }
+		const uint32_t steps = move->GetAccumulatedWear(drive);
+		if (steps != 0)
+		{
+			stats.driveMicrosteps[drive] += (uint64_t)steps;
+			statsDirty = true;
+		}
 	}
-
-	//always measure axis moves
-    //store positions and rotation totals
-	if(allHomed){
-		stats.xMillis += (double)deltaMachinePos[0];
-		stats.yMillis += (double)deltaMachinePos[1];
-		stats.zMillis += (double)deltaMachinePos[2];
-		stats.bDegrees += (double)deltaMachinePos[3];
-		stats.cDegrees += (double)deltaMachinePos[4];
-	}
-
-	//store extruder use
-    stats.eMillis += (double)(move->GetTotalExtrusionRate() * dtSeconds);
 
 
 
@@ -925,6 +883,7 @@ void RepRap::Spin() noexcept
 			jobEdgeDetector = false;
 		}
 	    stats.lifetimePrintSeconds += (double)dtSeconds;
+	    statsDirty = true;
 
 	//if we arent printing, we also have to not be paused for it to truly have no print job
 	} else if(gCodes->GetPauseState() == PauseState::notPaused){
@@ -954,29 +913,25 @@ void RepRap::SaveStatistics()
 
 
 
-    String<512> buffer;
+    String<1024> buffer;
 
+    // Full-precision persistence. Motor travel is stored per logical drive as absolute microsteps (uint64, exact).
+    // "lifetimePrintSeconds"/"lifetimePrintJobs" keep the same key names as the old format so older files stay readable.
     buffer.printf(
         "{\n"
-        "  \"lifetimePrintSeconds\": %lu,\n"
+        "  \"version\": 2,\n"
+        "  \"lifetimePrintSeconds\": %llu,\n"
         "  \"lifetimePrintJobs\": %lu,\n"
-    	"  \"xMillis\": %lu,\n"
-		"  \"yMillis\": %lu,\n"
-		"  \"zMillis\": %lu,\n"
-		"  \"bDegs\": %lu,\n"
-		"  \"cDegs\": %lu,\n"
-    	"  \"eMillis\": %lu\n"
-
-        "}\n",
-		(unsigned long)stats.lifetimePrintSeconds,
-		(unsigned long)stats.lifetimePrintJobs,
-		(unsigned long)stats.xMillis,
-		(unsigned long)stats.yMillis,
-		(unsigned long)stats.zMillis,
-		(unsigned long)stats.bDegrees,
-		(unsigned long)stats.cDegrees,
-		(unsigned long)stats.eMillis
+        "  \"driveMicrosteps\": [",
+        (unsigned long long)stats.lifetimePrintSeconds,
+        (unsigned long)stats.lifetimePrintJobs
     );
+
+    for (size_t i = 0; i < MaxAxesPlusExtruders; ++i)
+    {
+        buffer.catf("%s%llu", (i == 0) ? "" : ", ", (unsigned long long)stats.driveMicrosteps[i]);
+    }
+    buffer.cat("]\n}\n");
 
     file->Write(buffer.c_str());
 
@@ -1012,7 +967,7 @@ void RepRap::LoadStatistics()
         return;
     }
 
-    char buffer[256];
+    char buffer[1024];
 
     const size_t bytesRead =
         file->Read(buffer, sizeof(buffer) - 1);
@@ -1028,88 +983,73 @@ void RepRap::LoadStatistics()
 
     buffer[bytesRead] = '\0';
 
-    auto ParseUInt = [&](const char* key) -> uint32_t
+    // Parse a uint64 value following a key token. Returns 0 if the key is absent (so missing keys default cleanly).
+    auto ParseU64 = [&](const char* key) -> uint64_t
     {
         char* location = strstr(buffer, key);
-
         if (location == nullptr)
         {
-            debugPrintf(
-                "Missing stat key: %s\n",
-                key
-            );
-
             return 0;
         }
 
         location += strlen(key);
-
-        while (*location == ' ' ||
-               *location == '\t')
+        while (*location == ' ' || *location == '\t')
         {
             location++;
         }
 
-        uint32_t value = 0;
-
-        while (*location >= '0' &&
-               *location <= '9')
+        uint64_t value = 0;
+        while (*location >= '0' && *location <= '9')
         {
-            value =
-                (value * 10) +
-                (*location - '0');
-
+            value = (value * 10) + (uint64_t)(*location - '0');
             location++;
         }
-
         return value;
     };
 
-    stats.lifetimePrintSeconds =
-        (double) ParseUInt("\"lifetimePrintSeconds\":");
+    // These two keys exist in BOTH the old and new file formats, so hours and job count always carry over.
+    stats.lifetimePrintSeconds = (double)ParseU64("\"lifetimePrintSeconds\":");
+    stats.lifetimePrintJobs    = (uint32_t)ParseU64("\"lifetimePrintJobs\":");
 
-    stats.lifetimePrintJobs =
-        ParseUInt("\"lifetimePrintJobs\":");
+    // driveMicrosteps[] exists only in the new (v2) format. When loading an OLD file the key is absent, so the
+    // per-motor counters stay at 0 (old per-axis travel is not convertible to per-motor microsteps, so it is dropped).
+    for (size_t i = 0; i < MaxAxesPlusExtruders; ++i)
+    {
+        stats.driveMicrosteps[i] = 0;
+    }
 
-    stats.xMillis =
-    	(double) ParseUInt("\"xMillis\":");
-
-    stats.yMillis =
-    	(double) ParseUInt("\"yMillis\":");
-
-    stats.zMillis =
-    	(double) ParseUInt("\"zMillis\":");
-
-    stats.bDegrees =
-    	(double) ParseUInt("\"bDegs\":");
-
-    stats.cDegrees =
-    	(double) ParseUInt("\"cDegs\":");
-
-    stats.eMillis =
-    	(double) ParseUInt("\"eMillis\":");
+    char* arr = strstr(buffer, "\"driveMicrosteps\":");
+    if (arr != nullptr)
+    {
+        arr = strchr(arr, '[');
+        if (arr != nullptr)
+        {
+            arr++;
+            for (size_t i = 0; i < MaxAxesPlusExtruders && *arr != '\0' && *arr != ']'; )
+            {
+                while (*arr == ' ' || *arr == ',' || *arr == '\t' || *arr == '\n' || *arr == '\r')
+                {
+                    arr++;
+                }
+                if (*arr < '0' || *arr > '9')
+                {
+                    break;
+                }
+                uint64_t value = 0;
+                while (*arr >= '0' && *arr <= '9')
+                {
+                    value = (value * 10) + (uint64_t)(*arr - '0');
+                    arr++;
+                }
+                stats.driveMicrosteps[i++] = value;
+            }
+        }
+    }
 
     debugPrintf(
-        "Loaded stats:\n"
-        "  Print Seconds: %lu\n"
-        "  Print Jobs: %lu\n"
-        "  X Millis: %lu\n"
-        "  Y Millis: %lu\n"
-        "  Z Millis: %lu\n"
-        "  B Degrees: %lu\n"
-        "  C Degrees: %lu\n"
-    	"  E Millis: %lu\n",
-
-        (unsigned long)stats.lifetimePrintSeconds,
-        (unsigned long)stats.lifetimePrintJobs,
-
-        (unsigned long)stats.xMillis,
-        (unsigned long)stats.yMillis,
-        (unsigned long)stats.zMillis,
-
-        (unsigned long)stats.bDegrees,
-        (unsigned long)stats.cDegrees,
-		(unsigned long)stats.eMillis
+        "Loaded stats: %llu print-seconds, %lu jobs\n",
+        (unsigned long long)stats.lifetimePrintSeconds,
+        (unsigned long)stats.lifetimePrintJobs
     );
 }
 // Send diagnostics to the specified destination. This is in a separate function so that the large string doesn't take up main task stack space all the time.
@@ -1317,27 +1257,40 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 		    "Print statistics:\n"
 		    "  Lifetime print time: %d hours (%.1f days)\n"
 		    "  Lifetime print jobs: %lu\n"
-		    "  X travel: %.3f km\n"
-		    "  Y travel: %.3f km\n"
-		    "  Z travel: %.3f km\n"
-		    "  B rotation: %.3f rotations\n"
-		    "  C rotation: %.3f rotations\n"
-			"  E travel: %.3f km\n",
-
+		    "  Per-motor travel (absolute commanded):\n",
 
 		    (int)reprap.stats.lifetimePrintSeconds / 3600,
 			reprap.stats.lifetimePrintSeconds / 86400,
 
-		    reprap.stats.lifetimePrintJobs,
-
-		    reprap.stats.xMillis / 1000000,
-		    reprap.stats.yMillis / 1000000,
-		    reprap.stats.zMillis / 1000000,
-
-		    reprap.stats.bDegrees / 360,
-		    reprap.stats.cDegrees / 360,
-			reprap.stats.eMillis / 1000000
+		    reprap.stats.lifetimePrintJobs
 		);
+
+		// Motor travel is tracked per logical drive in microsteps (true per-motor wear on every kinematic).
+		// Convert to configured units via steps-per-mm: mm for linear axes/extruders, degrees for rotary axes.
+		const size_t numAxes = gCodes->GetTotalAxes();
+		const char * const axisLetters = gCodes->GetAxisLetters();
+		for (size_t axis = 0; axis < numAxes; ++axis)
+		{
+			const float stepsPerUnit = move->DriveStepsPerMm(axis);
+			double units = 0.0;
+			if (stepsPerUnit > 0.0f)
+			{
+				units = (double)reprap.stats.driveMicrosteps[axis] / (double)stepsPerUnit;
+			}
+			reply.catf("    %c: %.1f (%llu usteps)\n", axisLetters[axis], units, (unsigned long long)reprap.stats.driveMicrosteps[axis]);
+		}
+		const size_t numExtruders = gCodes->GetNumExtruders();
+		for (size_t e = 0; e < numExtruders; ++e)
+		{
+			const size_t drive = ExtruderToLogicalDrive(e);
+			const float stepsPerUnit = move->DriveStepsPerMm(drive);
+			double units = 0.0;
+			if (stepsPerUnit > 0.0f)
+			{
+				units = (double)reprap.stats.driveMicrosteps[drive] / (double)stepsPerUnit;
+			}
+			reply.catf("    E%u: %.1f mm (%llu usteps)\n", (unsigned int)e, units, (unsigned long long)reprap.stats.driveMicrosteps[drive]);
+		}
 	}
 	break;
 	}

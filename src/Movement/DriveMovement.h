@@ -156,6 +156,7 @@ private:
 	uint32_t driverEndstopsTriggeredAtStart;			// which drivers have endstops that are triggered at the start of the move
 
 	std::atomic<int32_t> movementAccumulator;			// the accumulated movement in microsteps since GetAccumulatedMovement was last called. Only used for extruders.
+	std::atomic<uint32_t> wearAccumulator;				// the accumulated ABSOLUTE movement in microsteps since GetAccumulatedWear was last called. Used for per-motor wear tracking on all drives.
 	uint32_t extruderPrintingSince;						// the millis ticks when this extruder started doing printing moves
 
 #if SUPPORT_S_CURVE

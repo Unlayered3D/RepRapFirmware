@@ -184,6 +184,7 @@ public:
 
     uint32_t lastStatsSaveMs = 0;
 	uint32_t saveIntervalMs = 60000; // 1 min
+	bool statsDirty = false;			// set when stats have changed since the last save, so we only write the SD card when there is something to persist
 
 
 protected:

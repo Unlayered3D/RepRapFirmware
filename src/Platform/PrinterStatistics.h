@@ -3,23 +3,23 @@
  *
  *  Created on: May 19, 2026
  *      Author: stedmaja
+ *
+ *  Lifetime usage/wear statistics.
+ *  Motor travel is tracked per LOGICAL DRIVE in absolute microsteps. Because the DDA transforms
+ *  axis coordinates into motor steps (CartesianToMotorSteps), this is true per-motor travel and is
+ *  therefore correct on every kinematic (Cartesian, CoreXY, delta, SCARA, 5-axis, IDEX, ...).
  */
 
 #ifndef SRC_PLATFORM_PRINTERSTATISTICS_H_
 #define SRC_PLATFORM_PRINTERSTATISTICS_H_
 
+#include <RepRapFirmware.h>
+
 struct PrinterStatistics
 {
-    double lifetimePrintSeconds = 0.0f;
-    unsigned long lifetimePrintJobs = 0;
-    double xMillis = 0.0f;
-    double yMillis = 0.0f;
-    double zMillis = 0.0f;
-    double bDegrees = 0.0f;
-    double cDegrees = 0.0f;
-    double eMillis = 0.0f;
+    double lifetimePrintSeconds = 0.0;						// total time spent actually printing
+    uint32_t lifetimePrintJobs = 0;							// number of print jobs completed
+    uint64_t driveMicrosteps[MaxAxesPlusExtruders] = { 0 };	// absolute commanded motor travel per logical drive, in microsteps
 };
-
-
 
 #endif /* SRC_PLATFORM_PRINTERSTATISTICS_H_ */

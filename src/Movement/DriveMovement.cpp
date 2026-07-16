@@ -36,6 +36,7 @@ void DriveMovement::Init(size_t drv) noexcept
 	distanceCarriedForwards = 0.0;
 	currentMotorPosition = positionAtSegmentStart = 0;
 	movementAccumulator = 0;
+	wearAccumulator = 0;
 	extruderPrinting = isExtruder = false;
 #if STEPS_DEBUG
 	positionRequested = 0;
@@ -545,7 +546,8 @@ pre(stepsTillRecalc == 0; segments != nullptr)
 				return LogStepError(6, (float)(currentMotorPosition - positionAtSegmentStart - netStepsThisSegment), currentSegment);
 			}
 
-			movementAccumulator += netStepsThisSegment;				// update the amount of extrusion
+			movementAccumulator += netStepsThisSegment;				// update the net movement (used for extruder filament monitoring)
+			wearAccumulator += (uint32_t)((netStepsThisSegment < 0) ? -netStepsThisSegment : netStepsThisSegment);	// update the absolute motor travel (used for per-motor wear tracking, all kinematics)
 			segments = currentSegment->GetNext();
 			const uint32_t prevEndTime = currentSegment->GetStartTime() + currentSegment->GetDuration();
 			RetireSegment(currentSegment);

@@ -427,6 +427,9 @@ public:
 
 	void AdjustLeadscrews(const floatc_t corrections[]) noexcept;							// Called by some Kinematics classes to adjust the leadscrews
 
+	// Per-motor wear tracking support (works on all kinematics: the DDA runs in motor space)
+	uint32_t GetAccumulatedWear(size_t logicalDrive) noexcept;								// Return and reset the accumulated ABSOLUTE commanded motor travel in microsteps
+
 	// Filament monitor support
 	int32_t GetAccumulatedExtrusion(size_t logicalDrive, bool& isPrinting) noexcept;		// Return and reset the accumulated commanded extrusion amount
 	uint32_t ExtruderPrintingSince(size_t logicalDrive) const noexcept;						// When we started doing normal moves after the most recent extruder-only move
