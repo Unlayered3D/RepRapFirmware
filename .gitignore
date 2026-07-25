@@ -32,3 +32,27 @@
 /.clang-format
 /src/Temp/
 /.settings/
+
+# ===== Unlayered fork additions =====
+
+# Build output and live printer configuration that earlier history committed into
+# the firmware source tree (14 MB of .bin/.uf2/.elf plus 39 printer config files,
+# including duplicates like "Duet3Firmware_Mini5plus - Copy.uf2" and
+# "config - Copy (2).g"). Untracked with "git rm --cached", so the files remain on
+# disk. Printer configs were snapshotted to ../backups/sys-snapshot-2026-07-25-pre-untrack.
+# Flashable output for each board is produced in that board's build directory
+# (e.g. Duet3Mini5plus/), which is already ignored above.
+/firmware/
+/sys/
+
+# Editor and indexer artifacts. These previously lived only in .git/info/exclude,
+# which is per-clone and therefore invisible to anyone else working on this fork.
+compile_commands.json
+.cache/
+*.su
+
+# Claude Code project-local settings (personal, machine-specific)
+/.claude/
+
+# python3 shim used by the UF2 build step where only python.exe is on PATH
+/Tools/CrcAppender/win-x86-64/python3
