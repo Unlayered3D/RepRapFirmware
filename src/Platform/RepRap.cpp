@@ -667,7 +667,7 @@ void RepRap::Init() noexcept
 
 	fastLoop = UINT32_MAX;
 	slowLoop = 0;
-	LoadStatistics();
+	stats.Init();
 }
 
 #if HAS_SBC_INTERFACE && SUPPORTS_SBC_OVER_USB
@@ -724,7 +724,6 @@ bool RepRap::RunStartupFile(c_string filename, bool isMainConfigFile) noexcept
 
 void RepRap::Spin() noexcept
 {
-//	platform->MessageF(UsbMessage, "Spin Start = %.3f\n", stats.lifetimePrintHours);
 	if (!active)
 	{
 		return;
@@ -847,211 +846,11 @@ void RepRap::Spin() noexcept
 	}
 
 
-	if (statsDirty && (millis() - lastStatsSaveMs) > saveIntervalMs)
-	{
-	    SaveStatistics();
-	    lastStatsSaveMs = millis();
-	    statsDirty = false;
-	}
+	stats.Spin();							// accumulate per-motor wear and print time, and persist periodically
 
-	// --- Lifetime usage / per-motor wear statistics ---
-	// Motor travel is drained from per-drive absolute-step accumulators. The DDA runs in motor space
-	// (CartesianToMotorSteps), so this is true per-motor travel and is correct on every kinematic.
-	static uint32_t lastUpdateMs = millis();
-	const uint32_t now2 = millis();
-	const float dtSeconds = (now2 - lastUpdateMs) / 1000.0f;
-	lastUpdateMs = now2;
-
-	for (size_t drive = 0; drive < MaxAxesPlusExtruders; ++drive)
-	{
-		const uint32_t steps = move->GetAccumulatedWear(drive);
-		if (steps != 0)
-		{
-			stats.driveMicrosteps[drive] += (uint64_t)steps;
-			statsDirty = true;
-		}
-	}
-
-
-
-	static bool jobEdgeDetector = false;
-
-	if (gCodes->IsReallyPrinting())
-	{
-		if(jobEdgeDetector){
-			stats.lifetimePrintJobs++;
-			jobEdgeDetector = false;
-		}
-	    stats.lifetimePrintSeconds += (double)dtSeconds;
-	    statsDirty = true;
-
-	//if we arent printing, we also have to not be paused for it to truly have no print job
-	} else if(gCodes->GetPauseState() == PauseState::notPaused){
-		jobEdgeDetector = true;
-	}
 	RTOSIface::Yield();
 }
 
-void RepRap::SaveStatistics()
-{
-    constexpr const char* tempFile =
-        "0:/sys/printerstats.tmp";
-
-    constexpr const char* finalFile =
-        "0:/sys/printerstats.json";
-
-    FileStore* file = platform->OpenSysFile(
-        tempFile,
-        OpenMode::write
-    );
-
-    if (file == nullptr)
-    {
-        debugPrintf("Failed to open stats temp file\n");
-        return;
-    }
-
-
-
-    String<1024> buffer;
-
-    // Full-precision persistence. Motor travel is stored per logical drive as absolute microsteps (uint64, exact).
-    // "lifetimePrintSeconds"/"lifetimePrintJobs" keep the same key names as the old format so older files stay readable.
-    buffer.printf(
-        "{\n"
-        "  \"version\": 2,\n"
-        "  \"lifetimePrintSeconds\": %llu,\n"
-        "  \"lifetimePrintJobs\": %lu,\n"
-        "  \"driveMicrosteps\": [",
-        (unsigned long long)stats.lifetimePrintSeconds,
-        (unsigned long)stats.lifetimePrintJobs
-    );
-
-    for (size_t i = 0; i < MaxAxesPlusExtruders; ++i)
-    {
-        buffer.catf("%s%llu", (i == 0) ? "" : ", ", (unsigned long long)stats.driveMicrosteps[i]);
-    }
-    buffer.cat("]\n}\n");
-
-    file->Write(buffer.c_str());
-
-    file->Flush();
-    file->Close();
-
-    if (!MassStorage::Rename(
-            tempFile,
-            finalFile,
-            true,
-            true
-        ))
-    {
-        debugPrintf("Failed to rename stats file\n");
-    }
-}
-
-
-void RepRap::LoadStatistics()
-{
-    constexpr const char* statsFile =
-        "0:/sys/printerstats.json";
-
-    FileStore* file = platform->OpenSysFile(
-        statsFile,
-        OpenMode::read
-    );
-
-    if (file == nullptr)
-    {
-        debugPrintf("No statistics file found\n");
-
-        return;
-    }
-
-    char buffer[1024];
-
-    const size_t bytesRead =
-        file->Read(buffer, sizeof(buffer) - 1);
-
-    file->Close();
-
-    if (bytesRead == 0)
-    {
-        debugPrintf("Statistics file empty\n");
-
-        return;
-    }
-
-    buffer[bytesRead] = '\0';
-
-    // Parse a uint64 value following a key token. Returns 0 if the key is absent (so missing keys default cleanly).
-    auto ParseU64 = [&](const char* key) -> uint64_t
-    {
-        char* location = strstr(buffer, key);
-        if (location == nullptr)
-        {
-            return 0;
-        }
-
-        location += strlen(key);
-        while (*location == ' ' || *location == '\t')
-        {
-            location++;
-        }
-
-        uint64_t value = 0;
-        while (*location >= '0' && *location <= '9')
-        {
-            value = (value * 10) + (uint64_t)(*location - '0');
-            location++;
-        }
-        return value;
-    };
-
-    // These two keys exist in BOTH the old and new file formats, so hours and job count always carry over.
-    stats.lifetimePrintSeconds = (double)ParseU64("\"lifetimePrintSeconds\":");
-    stats.lifetimePrintJobs    = (uint32_t)ParseU64("\"lifetimePrintJobs\":");
-
-    // driveMicrosteps[] exists only in the new (v2) format. When loading an OLD file the key is absent, so the
-    // per-motor counters stay at 0 (old per-axis travel is not convertible to per-motor microsteps, so it is dropped).
-    for (size_t i = 0; i < MaxAxesPlusExtruders; ++i)
-    {
-        stats.driveMicrosteps[i] = 0;
-    }
-
-    char* arr = strstr(buffer, "\"driveMicrosteps\":");
-    if (arr != nullptr)
-    {
-        arr = strchr(arr, '[');
-        if (arr != nullptr)
-        {
-            arr++;
-            for (size_t i = 0; i < MaxAxesPlusExtruders && *arr != '\0' && *arr != ']'; )
-            {
-                while (*arr == ' ' || *arr == ',' || *arr == '\t' || *arr == '\n' || *arr == '\r')
-                {
-                    arr++;
-                }
-                if (*arr < '0' || *arr > '9')
-                {
-                    break;
-                }
-                uint64_t value = 0;
-                while (*arr >= '0' && *arr <= '9')
-                {
-                    value = (value * 10) + (uint64_t)(*arr - '0');
-                    arr++;
-                }
-                stats.driveMicrosteps[i++] = value;
-            }
-        }
-    }
-
-    debugPrintf(
-        "Loaded stats: %llu print-seconds, %lu jobs\n",
-        (unsigned long long)stats.lifetimePrintSeconds,
-        (unsigned long)stats.lifetimePrintJobs
-    );
-}
 // Send diagnostics to the specified destination. This is in a separate function so that the large string doesn't take up main task stack space all the time.
 __attribute__((noinline)) void RepRap::GenerateDeferredDiagnostics(MessageType destination) noexcept
 {
@@ -1252,47 +1051,8 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 		}
 		break;
 	case 3 + Platform::NumPlatformDiagnosticParts + 13:
-	{
-		reply.lcatf(
-		    "Print statistics:\n"
-		    "  Lifetime print time: %d hours (%.1f days)\n"
-		    "  Lifetime print jobs: %lu\n"
-		    "  Per-motor travel (absolute commanded):\n",
-
-		    (int)reprap.stats.lifetimePrintSeconds / 3600,
-			reprap.stats.lifetimePrintSeconds / 86400,
-
-		    reprap.stats.lifetimePrintJobs
-		);
-
-		// Motor travel is tracked per logical drive in microsteps (true per-motor wear on every kinematic).
-		// Convert to configured units via steps-per-mm: mm for linear axes/extruders, degrees for rotary axes.
-		const size_t numAxes = gCodes->GetTotalAxes();
-		const char * const axisLetters = gCodes->GetAxisLetters();
-		for (size_t axis = 0; axis < numAxes; ++axis)
-		{
-			const float stepsPerUnit = move->DriveStepsPerMm(axis);
-			double units = 0.0;
-			if (stepsPerUnit > 0.0f)
-			{
-				units = (double)reprap.stats.driveMicrosteps[axis] / (double)stepsPerUnit;
-			}
-			reply.catf("    %c: %.1f (%llu usteps)\n", axisLetters[axis], units, (unsigned long long)reprap.stats.driveMicrosteps[axis]);
-		}
-		const size_t numExtruders = gCodes->GetNumExtruders();
-		for (size_t e = 0; e < numExtruders; ++e)
-		{
-			const size_t drive = ExtruderToLogicalDrive(e);
-			const float stepsPerUnit = move->DriveStepsPerMm(drive);
-			double units = 0.0;
-			if (stepsPerUnit > 0.0f)
-			{
-				units = (double)reprap.stats.driveMicrosteps[drive] / (double)stepsPerUnit;
-			}
-			reply.catf("    E%u: %.1f mm (%llu usteps)\n", (unsigned int)e, units, (unsigned long long)reprap.stats.driveMicrosteps[drive]);
-		}
-	}
-	break;
+		stats.Report(reply);
+		break;
 	}
 }
 

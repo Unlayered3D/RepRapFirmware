@@ -177,15 +177,7 @@ public:
 
 	static constexpr uint16_t DefaultDebugFlags = 0x00FF;
 
- 	PrinterStatistics stats = {};
-
-    void SaveStatistics();
-    void LoadStatistics();
-
-    uint32_t lastStatsSaveMs = 0;
-	uint32_t saveIntervalMs = 60000; // 1 min
-	bool statsDirty = false;			// set when stats have changed since the last save, so we only write the SD card when there is something to persist
-
+	PrinterStatistics& GetStatistics() noexcept { return stats; }
 
 protected:
 	DECLARE_OBJECT_MODEL_WITH_ARRAYS
@@ -194,6 +186,8 @@ protected:
 
 private:
 	__attribute__((noinline)) void GenerateDeferredDiagnostics(MessageType destination) noexcept;
+
+	PrinterStatistics stats;			// lifetime usage and per-motor wear counters; owns its own persistence
 
 #ifndef DUET_NG			// Duet 2 doesn't currently need this feature, so omit it to save memory
 	struct DebugLogRecord
