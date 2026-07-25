@@ -26,55 +26,29 @@ DUET3MB6HC_SRC_DIR := src
 DUET3MB6HC_LIBCPP_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR)/libcpp -name '*.cpp' -o -name '*.cc' 2>/dev/null)
 DUET3MB6HC_LIBC_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR)/libc -name '*.c' -o -name '*.cpp' 2>/dev/null)
 
-# Find all source files (excluding specified directories)
-DUET3MB6HC_CPP_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.cpp' \
-	! -path '*/libcpp/*' \
-	! -path '*/libc/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/smtp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/snmp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/httpd/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/test/*' \
-	! -path '*/DuetNG/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/tftp/*' \
-	! -path '*/Networking/W5500Ethernet/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/netif/ppp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/lwiperf/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/sntp/*' \
-	! -path '*/Display/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/http/*' \
-	! -path '*/Duet3Mini/*' \
-	! -path '*/Hardware/SAM4E/*' \
-	! -path '*/Hardware/SAME5x/*' \
-	! -path '*/Pccb/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/mqtt/*' \
-	! -path '*/Hardware/SAM4S/*' \
-	! -path '*/DuetM/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/doc/*')
+# Find all source files, then exclude specified directories using make's text functions.
+# NOTE: we deliberately do NOT filter with find's "! -path '*/dir/*'" here. Under the
+# Windows/msys2 make used for this build, the single-quoted glob patterns get expanded
+# against the working tree before find sees them (because dirs like src/libc and
+# src/libcpp exist), which makes find error out and return an empty list -> an empty
+# object list and a link with no input. Collecting everything with a plain find and
+# filtering in make is portable and avoids that.
+DUET3MB6HC_CPP_EXCL := /libcpp/ /libc/ /DuetNG/ /DuetM/ /Pccb/ /Display/ /Duet3Mini/ \
+	/Hardware/SAM4E/ /Hardware/SAME5x/ /Hardware/SAM4S/ /Networking/W5500Ethernet/ \
+	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/httpd/ /Lwip/src/apps/tftp/ \
+	/Lwip/src/apps/lwiperf/ /Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ \
+	/Lwip/src/netif/ppp/ /Lwip/test/ /Lwip/doc/
+DUET3MB6HC_CPP_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.cpp')
+DUET3MB6HC_CPP_SRCS := $(foreach f,$(DUET3MB6HC_CPP_SRCS),$(if $(strip $(foreach e,$(DUET3MB6HC_CPP_EXCL),$(findstring $(e),$(f)))),,$(f)))
 
-DUET3MB6HC_C_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.c' \
-	! -path '*/libc/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/smtp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/snmp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/test/*' \
-	! -path '*/DuetNG/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/tftp/*' \
-	! -path '*/Networking/W5500Ethernet/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/netif/ppp/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/lwiperf/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/sntp/*' \
-	! -path '*/Display/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/http/*' \
-	! -path '*/Duet3Mini/*' \
-	! -path '*/Hardware/SAM4E/*' \
-	! -path '*/Hardware/SAME5x/*' \
-	! -path '*/Pccb/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/src/apps/mqtt/*' \
-	! -path '*/Hardware/SAM4S/*' \
-	! -path '*/DuetM/*' \
-	! -path '*/Networking/LwipEthernet/Lwip/doc/*' \
-	! -path '*/MQTT_C/tests.c' \
-	! -path '*/MQTT_C/examples/*' \
-	! -path '*/MQTT_C/src/mqtt_pal.c')
+DUET3MB6HC_C_EXCL := /libc/ /DuetNG/ /DuetM/ /Pccb/ /Display/ /Duet3Mini/ \
+	/Hardware/SAM4E/ /Hardware/SAME5x/ /Hardware/SAM4S/ /Networking/W5500Ethernet/ \
+	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ \
+	/Lwip/src/apps/lwiperf/ /Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ \
+	/Lwip/src/netif/ppp/ /Lwip/test/ /Lwip/doc/ \
+	/MQTT_C/tests.c /MQTT_C/examples/ /MQTT_C/src/mqtt_pal.c
+DUET3MB6HC_C_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.c')
+DUET3MB6HC_C_SRCS := $(foreach f,$(DUET3MB6HC_C_SRCS),$(if $(strip $(foreach e,$(DUET3MB6HC_C_EXCL),$(findstring $(e),$(f)))),,$(f)))
 
 # Include paths
 DUET3MB6HC_INCLUDES := \

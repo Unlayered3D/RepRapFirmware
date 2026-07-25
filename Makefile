@@ -1,9 +1,11 @@
 # RepRapFirmware Master Makefile
 # Builds firmware for various Duet boards
 
-# Cross-compiler toolchain (relative to project root)
-#CROSS_COMPILE ?= ../arm-gnu-toolchain-13.2.Rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
-CROSS_COMPILE ?= ../arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+# Cross-compiler toolchain prefix, relative to this directory.
+# ../arm-gnu-toolchain-13.2.Rel1-x86_64-arm-none-eabi is a symlink to the Arm GNU
+# Toolchain installation. Override on the command line for a different toolchain:
+#   make Duet3Mini5plus CROSS_COMPILE=/path/to/bin/arm-none-eabi-
+CROSS_COMPILE ?= ../arm-gnu-toolchain-13.2.Rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
 export CROSS_COMPILE
 
 # Toolchain programs
@@ -85,15 +87,24 @@ help:
 .PHONY: all
 all: $(filter-out Duet3_MB6HC_no_SD Duet3_CAN0,$(CONFIGS))
 
-# Verify toolchain
-.PHONY: test-toolchain
-test-toolchain:
-	$(Q)echo "Testing toolchain..."
-	$(Q)if [ ! -f "$(CROSS_COMPILE)gcc" ]; then \
-		echo "ERROR: Toolchain not found at: $(CROSS_COMPILE)gcc"; \
-		echo "Please install the ARM GCC toolchain and set CROSS_COMPILE"; \
+# Verify toolchain. check-toolchain is silent on success and is an order-only
+# prerequisite of every board target (see below), so a missing or misconfigured
+# CROSS_COMPILE fails with one clear message instead of a wall of "command not
+# found" from every compile. test-toolchain is the verbose, user-facing version.
+# Accept both "gcc" and "gcc.exe" so the check behaves on Windows as well as POSIX,
+# and fall back to a PATH lookup for a bare (unprefixed) CROSS_COMPILE.
+.PHONY: check-toolchain
+check-toolchain:
+	$(Q)if [ ! -f "$(CROSS_COMPILE)gcc" ] && [ ! -f "$(CROSS_COMPILE)gcc.exe" ] \
+			&& ! command -v "$(CROSS_COMPILE)gcc" >/dev/null 2>&1; then \
+		echo "ERROR: ARM toolchain not found at: $(CROSS_COMPILE)gcc"; \
+		echo "       Install the Arm GNU Toolchain, or point CROSS_COMPILE at it:"; \
+		echo "         make $@ CROSS_COMPILE=/path/to/bin/arm-none-eabi-"; \
 		exit 1; \
 	fi
+
+.PHONY: test-toolchain
+test-toolchain: check-toolchain
 	$(Q)echo "Toolchain: $(CROSS_COMPILE)"
 	$(Q)$(CROSS_COMPILE)gcc --version | head -n 1
 	$(Q)echo "Toolchain OK"
@@ -201,6 +212,10 @@ $(WORKSPACE)/CANlib/SAM4S_RTOS/libCANlib.a:
 -include Makefiles/Duet3_CAN0.mk
 -include Makefiles/Duet3Mini5plus.mk
 -include Makefiles/Duet3_MB6HC_no_SD.mk
+
+# Check the toolchain before building anything. Order-only so it never counts as a
+# reason to relink. Must come after the includes, where the board targets are defined.
+$(CONFIGS): | check-toolchain
 
 # Generic clean target
 .PHONY: clean
