@@ -1685,9 +1685,6 @@ uint32_t Move::ExtruderPrintingSince(size_t logicalDrive) const noexcept
 	return dms[logicalDrive].extruderPrintingSince;
 }
 
-// Get the accumulated extruder motor steps taken by an extruder since the last call to this function. Used by the filament monitoring code.
-// Returns the number of motor steps moved since the last call, and sets isPrinting true unless we are currently executing an extruding but non-printing move
-// This is called from the filament monitor ISR and from FilamentMonitor::Spin
 // Return and reset the accumulated ABSOLUTE motor travel (microsteps) for a logical drive, for per-motor wear tracking.
 // The DDA transforms axis coordinates to motor steps (CartesianToMotorSteps), so this is true per-motor travel on any kinematic.
 uint32_t Move::GetAccumulatedWear(size_t logicalDrive) noexcept
@@ -1695,6 +1692,9 @@ uint32_t Move::GetAccumulatedWear(size_t logicalDrive) noexcept
 	return dms[logicalDrive].wearAccumulator.exchange(0);		// atomic read-and-clear; any in-flight segment's steps are counted on the next poll
 }
 
+// Get the accumulated extruder motor steps taken by an extruder since the last call to this function. Used by the filament monitoring code.
+// Returns the number of motor steps moved since the last call, and sets isPrinting true unless we are currently executing an extruding but non-printing move
+// This is called from the filament monitor ISR and from FilamentMonitor::Spin
 int32_t Move::GetAccumulatedExtrusion(size_t logicalDrive, bool& isPrinting) noexcept
 {
 	DriveMovement& dm = dms[logicalDrive];

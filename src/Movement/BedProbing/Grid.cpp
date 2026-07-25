@@ -634,10 +634,6 @@ float HeightMap::GetInterpolatedHeightError(float axis0, float axis1) const noex
 	return InterpolateAxis0Axis1(xIndex, yIndex, xf - xFloor, yf - yFloor);
 }
 
-//this is the function i need to modify to add g1 continuity. basically I can look out an additional point in the grid
-//this is basically a probability thing where correlations are figured out
-// to add g1, each grid height needs a "slope" that can be found by looking at neighbors. If only one neighbor just use that one
-// i think this would be a bezier?
 float HeightMap::InterpolateAxis0Axis1(size_t axis0Index, size_t axis1Index, float axis0Frac, float axis1Frac) const noexcept
 {
 	const uint32_t indexX0Y0 = GetMapIndex(axis0Index, axis1Index);	// (X0,Y0)
@@ -646,10 +642,10 @@ float HeightMap::InterpolateAxis0Axis1(size_t axis0Index, size_t axis1Index, flo
 	const uint32_t indexX1Y1 = indexX0Y1 + 1;						// (X1,Y1)
 
 	const float xyFrac = axis0Frac * axis1Frac;
-	return (gridHeights[indexX0Y0] * (1.0 - axis0Frac - axis1Frac + xyFrac)) // basically gets the amount unaffected by either axis0 or axis1
-			+ (gridHeights[indexX1Y0] * (axis0Frac - xyFrac)) // gets amount affected only by axis 0
-			+ (gridHeights[indexX0Y1] * (axis1Frac - xyFrac)) //gets amount only affected by axis 1
-			+ (gridHeights[indexX1Y1] * xyFrac); //gets amount affected by both
+	return (gridHeights[indexX0Y0] * (1.0 - axis0Frac - axis1Frac + xyFrac))
+			+ (gridHeights[indexX1Y0] * (axis0Frac - xyFrac))
+			+ (gridHeights[indexX0Y1] * (axis1Frac - xyFrac))
+			+ (gridHeights[indexX1Y1] * xyFrac);
 }
 
 void HeightMap::ExtrapolateMissing() noexcept
