@@ -29,8 +29,11 @@ public:
 
 private:
 	// Worst case JSON: the fixed keys plus MaxAxesPlusExtruders 20-digit values and ", "
-	// separators. Sized from the array so it cannot silently overflow as boards grow.
-	static constexpr size_t JsonBufferSize = 128 + (MaxAxesPlusExtruders * 24);
+	// separators. Sized from the array so it cannot silently overflow as boards grow, but never
+	// below 1024 - an SD card moved from a 32-drive board (MB6HC) to a 12-drive one (Duet 3 Mini)
+	// carries a file sized for 32 entries, and the reader must still be able to take it in.
+	static constexpr size_t SizedJsonBuffer = 128 + (MaxAxesPlusExtruders * 24);
+	static constexpr size_t JsonBufferSize = (SizedJsonBuffer < 1024) ? 1024 : SizedJsonBuffer;
 
 	static constexpr const char *StatsFileName = "0:/sys/printerstats.json";
 	static constexpr const char *StatsTempFileName = "0:/sys/printerstats.tmp";
@@ -48,6 +51,8 @@ private:
 	uint32_t printMillisCarry = 0;						// print time below one second, carried between calls so none is lost
 	bool dirty = false;									// a counter changed since the last save
 	bool armedForNewJob = false;						// set while genuinely idle, so the next printing move counts as a new job
+	bool initialised = false;							// Spin() does nothing until Init() has run; RepRap::Init calls Spin() before it calls stats.Init()
+	bool savingSuppressed = false;						// set when Load() could not parse the file, so we never overwrite data we failed to read
 };
 
 #endif /* SRC_PLATFORM_PRINTERSTATISTICS_H_ */

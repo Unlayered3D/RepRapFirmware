@@ -19,12 +19,21 @@ void PrinterStatistics::Init() noexcept
 {
 	Load();
 	lastUpdateMs = lastSaveMs = millis();
+	initialised = true;
 }
 
 // Called from RepRap::Spin(). Drains the per-drive wear accumulators, accumulates print
 // time, and persists at most once every SaveIntervalMs.
 void PrinterStatistics::Spin() noexcept
 {
+	// RepRap::Init() calls Spin() partway through startup, before it calls stats.Init(). Bail out
+	// until Init() has loaded the file, otherwise lastSaveMs is still 0 (so the save interval looks
+	// long expired) and a Save() here would write zeroed counters over the saved ones.
+	if (!initialised)
+	{
+		return;
+	}
+
 	const uint32_t now = millis();
 	const uint32_t dtMs = now - lastUpdateMs;
 	lastUpdateMs = now;
@@ -69,7 +78,7 @@ void PrinterStatistics::Spin() noexcept
 		armedForNewJob = true;
 	}
 
-	if (dirty && now - lastSaveMs >= SaveIntervalMs)
+	if (dirty && !savingSuppressed && now - lastSaveMs >= SaveIntervalMs)
 	{
 		Save();
 		lastSaveMs = now;
@@ -110,15 +119,24 @@ void PrinterStatistics::Save() noexcept
 		return;
 	}
 
-	const bool ok = file->Write(buffer.c_str());
-	file->Close();
-	if (!ok)
+	// Both results matter, and Close() matters more. OpenMode::write allocates a FileWriteBuffer
+	// (8 kB, 4 kB under SBC), and this JSON is well under that, so Write() only ever memcpys into
+	// RAM and returns true - it never touches the card. The actual f_write happens in
+	// Close() -> ForceClose() -> Flush(), which is what reports a full or failing card. Close() is
+	// called unconditionally rather than short-circuited, so the handle is never leaked.
+	const bool writeOk = file->Write(buffer.c_str());
+	const bool closeOk = file->Close();
+	if (!writeOk || !closeOk)
 	{
-		debugPrintf("PrinterStatistics: failed to write %s\n", StatsTempFileName);
-		return;
+		debugPrintf("PrinterStatistics: failed to write %s (write=%d close=%d)\n",
+					StatsTempFileName, (int)writeOk, (int)closeOk);
+		return;								// leave the existing good file alone
 	}
 
-	if (!MassStorage::Rename(StatsTempFileName, StatsFileName, true, true))
+	// messageIfFailed is false: this runs every SaveIntervalMs, so a persistent failure - a full
+	// card, or SBC mode, where the file is written via the SBC but MassStorage::Rename goes
+	// straight to the local FatFS volume - would otherwise spam the console indefinitely.
+	if (!MassStorage::Rename(StatsTempFileName, StatsFileName, true, false))
 	{
 		debugPrintf("PrinterStatistics: failed to rename %s to %s\n", StatsTempFileName, StatsFileName);
 	}
@@ -144,13 +162,18 @@ void PrinterStatistics::Load() noexcept
 	if (bytesRead <= 0)
 	{
 		debugPrintf("PrinterStatistics: %s is empty\n", StatsFileName);
-		return;
+		return;								// nothing to preserve, so saving stays enabled
 	}
 	if ((size_t)bytesRead == sizeof(buffer) - 1)
 	{
-		// The file filled the buffer, so it is either truncated here or longer than we can
-		// parse. Parsing on would stop mid-number and silently corrupt the counters.
-		debugPrintf("PrinterStatistics: %s is larger than %u bytes, ignoring it\n",
+		// The file filled the buffer, so it is either truncated here or longer than we can parse.
+		// Parsing on would stop mid-number and silently corrupt the counters. Suppress saving as
+		// well: the counters are all still zero at this point, so letting Save() run would replace
+		// a file we could not read with a file of zeros, destroying it. Recovering means fixing or
+		// deleting the file and rebooting.
+		savingSuppressed = true;
+		debugPrintf("PrinterStatistics: %s exceeds %u bytes and cannot be parsed; "
+					"statistics are frozen and will NOT be saved. Fix or delete the file.\n",
 					StatsFileName, (unsigned int)sizeof(buffer));
 		return;
 	}
@@ -226,6 +249,11 @@ void PrinterStatistics::Report(const StringRef& reply) const noexcept
 				lifetimePrintSeconds / 3600,
 				(double)lifetimePrintSeconds / 86400,
 				lifetimePrintJobs);
+
+	if (savingSuppressed)
+	{
+		reply.cat("  WARNING: printerstats.json could not be parsed; statistics are frozen and not being saved\n");
+	}
 
 	const GCodes& gCodes = reprap.GetGCodes();
 	Move& move = reprap.GetMove();
