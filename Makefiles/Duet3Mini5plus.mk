@@ -30,20 +30,13 @@ DUET3MINI_LIBC_SRCS := $(shell find $(DUET3MINI_SRC_DIR)/libc -name '*.c' -o -na
 # against the working tree before find sees them (because dirs like src/libc and
 # src/Hardware/SAME70 exist), which makes find error out and return an empty list.
 # Collecting everything with a plain find and filtering in make is portable and avoids that.
-DUET3MINI_CPP_EXCL := /libcpp/ /libc/ /Duet3_V06/ /Hardware/SAME70/ /Hardware/SAM4E/ \
-	/Hardware/SAM4S/ /DuetNG/ /Networking/W5500Ethernet/ /Pccb/ /DuetM/ \
-	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
-	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ /Lwip/doc/
+DUET3MINI_CPP_EXCL := $(SAME5X_FAMILY_CPP_EXCL)
 DUET3MINI_CPP_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.cpp')
-DUET3MINI_CPP_SRCS := $(foreach f,$(DUET3MINI_CPP_SRCS),$(if $(strip $(foreach e,$(DUET3MINI_CPP_EXCL),$(findstring $(e),$(f)))),,$(f)))
+DUET3MINI_CPP_SRCS := $(call EXCLUDE_PATHS,$(DUET3MINI_CPP_SRCS),$(DUET3MINI_CPP_EXCL))
 
-DUET3MINI_C_EXCL := /libc/ /SBC/ /Hardware/SAME70/ /Hardware/SAM4E/ /Hardware/SAM4S/ \
-	/DuetNG/ /Pccb/ /DuetM/ \
-	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
-	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ \
-	/Lwip/test/ /Lwip/doc/ /MQTT_C/tests.c /MQTT_C/examples/ /MQTT_C/src/mqtt_pal.c
+DUET3MINI_C_EXCL := $(SAME5X_FAMILY_C_EXCL)
 DUET3MINI_C_SRCS := $(shell find $(DUET3MINI_SRC_DIR) -name '*.c')
-DUET3MINI_C_SRCS := $(foreach f,$(DUET3MINI_C_SRCS),$(if $(strip $(foreach e,$(DUET3MINI_C_EXCL),$(findstring $(e),$(f)))),,$(f)))
+DUET3MINI_C_SRCS := $(call EXCLUDE_PATHS,$(DUET3MINI_C_SRCS),$(DUET3MINI_C_EXCL))
 
 # Include paths
 DUET3MINI_INCLUDES := \

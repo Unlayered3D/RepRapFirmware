@@ -206,6 +206,9 @@ $(WORKSPACE)/CANlib/SAM4S_RTOS/libCANlib.a:
 	$(Q)echo "  BUILD   CANlib/SAM4S_RTOS"
 	$(Q)$(MAKE) $(VERBOSE) -C $(WORKSPACE)/CANlib SAM4S_RTOS
 
+# Shared source-exclusion lists. Must come before the board makefiles, which reference them.
+include Makefiles/common-excludes.mk
+
 # Include dependency makefiles
 -include Makefiles/Duet3_MB6HC.mk
 -include Makefiles/Duet3_MB6XD.mk

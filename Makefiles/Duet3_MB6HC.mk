@@ -33,22 +33,13 @@ DUET3MB6HC_LIBC_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR)/libc -name '*.c' -o -
 # src/libcpp exist), which makes find error out and return an empty list -> an empty
 # object list and a link with no input. Collecting everything with a plain find and
 # filtering in make is portable and avoids that.
-DUET3MB6HC_CPP_EXCL := /libcpp/ /libc/ /DuetNG/ /DuetM/ /Pccb/ /Display/ /Duet3Mini/ \
-	/Hardware/SAM4E/ /Hardware/SAME5x/ /Hardware/SAM4S/ /Networking/W5500Ethernet/ \
-	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/httpd/ /Lwip/src/apps/tftp/ \
-	/Lwip/src/apps/lwiperf/ /Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ \
-	/Lwip/src/netif/ppp/ /Lwip/test/ /Lwip/doc/
+DUET3MB6HC_CPP_EXCL := $(SAME70_FAMILY_CPP_EXCL)
 DUET3MB6HC_CPP_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.cpp')
-DUET3MB6HC_CPP_SRCS := $(foreach f,$(DUET3MB6HC_CPP_SRCS),$(if $(strip $(foreach e,$(DUET3MB6HC_CPP_EXCL),$(findstring $(e),$(f)))),,$(f)))
+DUET3MB6HC_CPP_SRCS := $(call EXCLUDE_PATHS,$(DUET3MB6HC_CPP_SRCS),$(DUET3MB6HC_CPP_EXCL))
 
-DUET3MB6HC_C_EXCL := /libc/ /DuetNG/ /DuetM/ /Pccb/ /Display/ /Duet3Mini/ \
-	/Hardware/SAM4E/ /Hardware/SAME5x/ /Hardware/SAM4S/ /Networking/W5500Ethernet/ \
-	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ \
-	/Lwip/src/apps/lwiperf/ /Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ \
-	/Lwip/src/netif/ppp/ /Lwip/test/ /Lwip/doc/ \
-	/MQTT_C/tests.c /MQTT_C/examples/ /MQTT_C/src/mqtt_pal.c
+DUET3MB6HC_C_EXCL := $(SAME70_FAMILY_C_EXCL)
 DUET3MB6HC_C_SRCS := $(shell find $(DUET3MB6HC_SRC_DIR) -name '*.c')
-DUET3MB6HC_C_SRCS := $(foreach f,$(DUET3MB6HC_C_SRCS),$(if $(strip $(foreach e,$(DUET3MB6HC_C_EXCL),$(findstring $(e),$(f)))),,$(f)))
+DUET3MB6HC_C_SRCS := $(call EXCLUDE_PATHS,$(DUET3MB6HC_C_SRCS),$(DUET3MB6HC_C_EXCL))
 
 # Include paths
 DUET3MB6HC_INCLUDES := \
