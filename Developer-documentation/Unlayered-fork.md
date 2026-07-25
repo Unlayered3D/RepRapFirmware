@@ -95,11 +95,22 @@ misdiagnose. Collect with a plain `find` and filter with `$(foreach)`/`$(findstr
 
 ## Upstream merge surface
 
-39 files under `src/` differ from upstream (excluding the vendored `MQTT_C` and `Lwip`
-trees). Keeping this list short is what makes merging from `upstream/3.7-dev` tractable.
+41 files under `src/` differ from upstream, excluding the vendored `MQTT_C` and `Lwip` trees:
+**7 new fork-owned files** plus **34 modified upstream files**. Only the latter 34 can conflict,
+and keeping that number down is what makes merging from `upstream/3.7-dev` tractable.
 
-**Fork-owned new files** — no conflict risk:
-`Comms/MMU2S/*` · `Movement/Kinematics/FiveAxisKinematics.{h,cpp}` · `Platform/PrinterStatistics.{h,cpp}`
+Regenerate these counts with:
+
+```bash
+git diff --diff-filter=A --name-only ed7e034c7 HEAD -- src/ \
+    ':!src/Networking/MQTT/MQTT_C' ':!src/Networking/LwipEthernet/Lwip'   # new files
+git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
+    ':!src/Networking/MQTT/MQTT_C' ':!src/Networking/LwipEthernet/Lwip'   # modified files
+```
+
+**Fork-owned new files** (7) — no conflict risk:
+`Comms/MMU2S/{MMU2S.h,MMU2S.cpp,MMU2SProtocol.h}` ·
+`Movement/Kinematics/FiveAxisKinematics.{h,cpp}` · `Platform/PrinterStatistics.{h,cpp}`
 
 **Upstream files touched, and why:**
 
@@ -114,6 +125,8 @@ trees). Keeping this list short is what makes merging from `upstream/3.7-dev` tr
 | Heater PID | `Heating/{FOPDT.h,FOPDT.cpp,Heat.h,Heat.cpp,Heater.h}` | `M301`/`M304` PID override support |
 | Input shaping | `Movement/AxisShaper.{h,cpp}` | Three negative shapers (`nzvum`, `nzvdum`, `neium`) |
 | Serial | `Comms/AuxDevice.{h,cpp}`, `CAN/CanInterface.cpp` | MMU2S UART mode |
+| Probing | `GCodes/StraightProbeSettings.h` | Probing changes for the five-axis machines |
+| Identity | `Version.h` | `+unlayered.1` suffix so local builds are identifiable |
 | Misc | `RepRapFirmware.h` | Forward declarations |
 
 Deliberately **not** touched, to keep the surface small: `Movement/BedProbing/Grid.cpp`,
