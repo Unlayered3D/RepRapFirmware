@@ -5,12 +5,15 @@
  *      Author: Alex Stedman
  */
 
+#include <Movement/Kinematics/FiveAxisKinematics.h>
+
+#if SUPPORT_FIVEAXIS
+
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
 #include <GCodes/GCodes.h>
 #include <GCodes/GCodeBuffer/GCodeBuffer.h>
 #include <Movement/DDA.h>
-#include <Movement/Kinematics/FiveAxisKinematics.h>
 #include <Movement/Move.h>
 
 // Object model table and functions
@@ -83,11 +86,14 @@ void FiveAxisKinematics::Recalc() noexcept {
 	// Calculate the forward differential matrix by inverting the inverse differential matrix
 	{
 		//update the matrix with new values
+		// Three differential mappings exist. coreXBYC2 (M669 K16) is the one in production use on
+		// the Unlayered machines; coreXBYC (K15) is the earlier hand-derived mapping and coreXBYC3
+		// (K17) is K16's matrix with per-drive homing instead of Cartesian homing (see GetHomingMode).
+		// All three are kept so an existing config.g keeps working; prefer K16 for new machines.
 		switch (GetKinematicsType()) {
 		case KinematicsType::cartesian:
 		default:
 			break;
-			//TODO decide which one of these to use
 		case KinematicsType::coreXBYC:
 			//DIFFERENTIAL MATRIX
 			//This matrix maps motor drivers to each axis
@@ -248,8 +254,11 @@ void FiveAxisKinematics::Recalc() noexcept {
 			tempMatrix(i, i + MaxAxes) = 1.0;
 		}
 
-		// Apply the Gauss-Jordan operation to transform the right half into the inverse of the inverse matrix
-		//TODO: PLZ USE A PIVOTING STRATEGY (Partial pivoting) to reduce float error
+		// Apply the Gauss-Jordan operation to transform the right half into the inverse of the inverse matrix.
+		// KNOWN LIMITATION: FixedMatrix::GaussJordan eliminates without partial pivoting, so it can lose
+		// precision (or fail outright on a singular leading entry) for ill-conditioned geometry. In practice
+		// the matrices here are small, well scaled and near-diagonal, so this has not caused trouble - but a
+		// pivoting strategy is the correct fix if a configuration ever produces a bad forward matrix.
 		const bool ok = tempMatrix.GaussJordan(MaxAxes, 2 * MaxAxes);
 		if (ok) {
 			// Copy the right half to the forward matrix
@@ -326,7 +335,7 @@ inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 	return controllingDrivers[axis] != LogicalDrivesBitmap::MakeFromBits(axis);
 }
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
-		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), modified(false), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
+		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), matrixNeedsInverting(false), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
 				5.5f), xSkew(0.0f), ySkew(0.0f), xzSkew(0.0f), yzSkew(0.0f), xySkew(0.0f), bSkew(0.0f), degreesPerSegment(2.0f) {
 
 	// Start by assuming 1:1 mapping of axes to motors by setting diagonal elements to 1 and other elements to zero
@@ -384,13 +393,13 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 			for (size_t m = 0; m < numMotors; ++m) {
 				if (inverseMatrix(axis, m) != motorFactors[m]) {
 					inverseMatrix(axis, m) = motorFactors[m];
-					modified = true;
+					matrixNeedsInverting = true;
 				}
 			}
 			for (size_t m = numMotors; m < MaxAxes; ++m) {
 				if (inverseMatrix(axis, m) != 0.0) {
 					inverseMatrix(axis, m) = 0.0;
-					modified = true;
+					matrixNeedsInverting = true;
 				}
 			}
 		}
@@ -417,7 +426,7 @@ bool FiveAxisKinematics::Configure(unsigned int mCode, GCodeBuffer &gb,
 	} else if (!seenSeg) {
 		Kinematics::Configure(mCode, gb, reply, error);
 		reply.catf(", %.2f deg/segment (P)", (double) degreesPerSegment);
-		reply.catf(", %smatrix:", ((modified) ? "modified " : ""));
+		reply.catf(", %smatrix:", ((matrixNeedsInverting) ? "modified " : ""));
 		const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
 		for (size_t axis = 0; axis < numVisibleAxes; ++axis) {
 			for (size_t motor = 0; motor < numTotalAxes; ++motor) {
@@ -463,7 +472,6 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 		size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[],
 		bool isCoordinated) const noexcept {
 	MovementError rslt = MovementError::ok;
-	//TODO apply inverse kinematics
 
 	//initialize the machine pos
 	float rotatedMachinePos[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
@@ -647,5 +655,7 @@ void FiveAxisKinematics::ConvertAxisAmountsToLogicalDriveAmounts(
 	}
 	memcpyf(amounts, convertedAmounts, MaxAxes);
 }
+
+#endif	// SUPPORT_FIVEAXIS
 
 // End

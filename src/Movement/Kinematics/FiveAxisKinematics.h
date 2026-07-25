@@ -5,8 +5,12 @@
  *      Author: Alex Stedman
  */
 
-#ifndef SRC_MOVEMENT_KINEMATICS_SPLIT5KINEMATICS_H_
-#define SRC_MOVEMENT_KINEMATICS_SPLIT5KINEMATICS_H_
+#ifndef SRC_MOVEMENT_KINEMATICS_FIVEAXISKINEMATICS_H_
+#define SRC_MOVEMENT_KINEMATICS_FIVEAXISKINEMATICS_H_
+
+#include <RepRapFirmware.h>
+
+#if SUPPORT_FIVEAXIS
 
 #include "ZLeadscrewKinematics.h"
 #include <Math/Matrix.h>
@@ -28,8 +32,9 @@ public:
 			const float stepsPerMm[], size_t numVisibleAxes,
 			size_t numTotalAxes, float machinePos[]) const noexcept override;
 	HomingMode GetHomingMode() const noexcept override {
-		//for mode 3 let it use individual drives, otherwise home normally.
-		//TODO pick a mode and stick with it
+		// coreXBYC3 (M669 K17) exists specifically to home the differential pairs as individual
+		// drives; coreXBYC and coreXBYC2 home as Cartesian axes. This is the only behavioural
+		// difference between K16 and K17. K16 is the variant in production use.
 		if (GetKinematicsType() == KinematicsType::coreXBYC3) {
 			return HomingMode::homeIndividualDrives;
 		} else {
@@ -69,9 +74,26 @@ private:
 	uint8_t firstMotor[MaxAxes], lastMotor[MaxAxes];// first and last motor used by each axis
 	uint8_t firstAxis[MaxAxes], lastAxis[MaxAxes];// first and last axis that each motor controls
 
-	bool modified;							// true if matrix has been altered
-	float a5, d6, bRatio, cRatio, xSkew, ySkew, xzSkew, yzSkew, xySkew, bSkew;
-	float degreesPerSegment;				// max angular change per segment (deg); 0 disables rotary-driven segmentation
+	bool matrixNeedsInverting;				// true if inverseMatrix has been altered and forwardMatrix must be recomputed
+
+	// Configurable geometry. Every one of these is set by M669; the letter shown is the
+	// parameter that sets it (see the TryGetFValue calls in Configure). a5 and d6 are the two
+	// nonzero Denavit-Hartenberg parameters; see the DH table at the top of the .cpp.
+	// The skews are cross-axis compensation terms written into inverseMatrix by Recalc, so the
+	// comment for each names the coupling it introduces rather than a physical dimension.
+	float a5;								// (A) DH link length a5, mm
+	float d6;								// (D) DH link offset d6, mm
+	float bRatio;							// (R) B-axis reduction: 4*bRatio/36 per motor step pair
+	float cRatio;							// (Q) C-axis reduction: 4*cRatio/36 per motor step pair
+	float xSkew;							// (X) per mm the X axis travels, change Z by this amount
+	float ySkew;							// (Y) per mm the Y axis travels, change Z by this amount
+	float xzSkew;							// (U) couples the differential X/B pair into Z
+	float yzSkew;							// (V) couples the differential Y/C pair into Z
+	float xySkew;							// (W) couples the differential Y/C pair into X
+	float bSkew;							// (B) B-rotation-dependent correction applied via rotationMatrix2
+	float degreesPerSegment;				// (P) max angular change per segment, deg; 0 disables rotary-driven segmentation
 };
 
-#endif /* SRC_MOVEMENT_KINEMATICS_FiveAxisKinematics_H_ */
+#endif	// SUPPORT_FIVEAXIS
+
+#endif /* SRC_MOVEMENT_KINEMATICS_FIVEAXISKINEMATICS_H_ */
