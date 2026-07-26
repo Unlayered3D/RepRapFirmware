@@ -1692,6 +1692,26 @@ uint32_t Move::GetAccumulatedWear(size_t logicalDrive) noexcept
 	return dms[logicalDrive].wearAccumulator.exchange(0);		// atomic read-and-clear; any in-flight segment's steps are counted on the next poll
 }
 
+// Add this move's absolute travel for one axis, in that axis's own unit (mm or degrees). Called from
+// DDA::InitStandardMove once per move, or once per segment for a segmented move.
+// Stored as hundredths so the accumulator stays integral: a float accumulator would drift over the
+// machine's lifetime. Rounding is to nearest, so the error does not accumulate in one direction;
+// travel below half a centi-unit in a single segment is dropped, which is immaterial next to the
+// 0.01 degree resolution this gives on a 360 degree revolution.
+void Move::AddAxisTravel(size_t axis, float amount) noexcept
+{
+	if (axis < MaxAxes && amount > 0.0)
+	{
+		axisTravelAccumulator[axis].fetch_add((uint32_t)lrintf(amount * 100.0));
+	}
+}
+
+// Return and reset the accumulated ABSOLUTE axis travel in centi-units, for per-axis life tracking.
+uint32_t Move::GetAccumulatedAxisTravel(size_t axis) noexcept
+{
+	return (axis < MaxAxes) ? axisTravelAccumulator[axis].exchange(0) : 0;
+}
+
 // Get the accumulated extruder motor steps taken by an extruder since the last call to this function. Used by the filament monitoring code.
 // Returns the number of motor steps moved since the last call, and sets isPrinting true unless we are currently executing an extruding but non-printing move
 // This is called from the filament monitor ISR and from FilamentMonitor::Spin

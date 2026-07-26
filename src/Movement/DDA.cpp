@@ -595,6 +595,25 @@ MovementError DDA::InitStandardMove(DDARing& ring, const RawMove &nextMove, bool
 		ApplyPerMotorLimits(k);												// apply per-physical-motor limits (M203.2/M201.2/M205.2) using the real motor deltas
 	}
 
+	// Record absolute per-axis travel for the lifetime statistics - e.g. counting C revolutions
+	// against a slip ring's rated life. This must be done in AXIS space, not from the per-motor
+	// counters: on a differential kinematic such as CoreXBYC the Y and C axes share motors 1 and 4,
+	// so motor travel cannot be unmixed back into C rotation.
+	// directionVector is axis space and unit-normalised here, so directionVector[axis]*totalDistance
+	// is this move's travel in that axis's own unit (see the identical form at line ~1334). We are
+	// past every early-out in this function, so the move is committed; a segmented move contributes
+	// one call per segment. This counts COMMANDED travel, so a move cut short by an emergency stop
+	// or a triggered endstop is counted in full - conservative for a service interval.
+	Move& mutableMove = reprap.GetMove();					// the local 'move' here is a const reference
+	for (size_t axis = 0; axis < numVisibleAxes; ++axis)
+	{
+		const float axisTravel = directionVector[axis] * totalDistance;
+		if (axisTravel != 0.0)
+		{
+			mutableMove.AddAxisTravel(axis, fabsf(axisTravel));
+		}
+	}
+
 	// 7. Calculate the provisional accelerate and decelerate distances and the top speed
 #if SUPPORT_S_CURVE
 	if (   prev->IsProvisional()													// if previous move is queued but has not started yet

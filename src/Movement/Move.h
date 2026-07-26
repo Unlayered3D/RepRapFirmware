@@ -430,6 +430,13 @@ public:
 	// Per-motor wear tracking support (works on all kinematics: the DDA runs in motor space)
 	uint32_t GetAccumulatedWear(size_t logicalDrive) noexcept;								// Return and reset the accumulated ABSOLUTE commanded motor travel in microsteps
 
+	// Per-AXIS travel tracking. Separate from the per-motor counters above because on a differential
+	// kinematic they are not interchangeable: on CoreXBYC the Y/C pair share motors 1 and 4, so motor
+	// travel cannot be unmixed back into C rotation. Needed to count e.g. C revolutions for slip-ring
+	// service intervals. Units are hundredths of the axis's own unit - mm for linear, degrees for rotary.
+	void AddAxisTravel(size_t axis, float amount) noexcept;									// Called from the DDA with this move's absolute travel for one axis
+	uint32_t GetAccumulatedAxisTravel(size_t axis) noexcept;								// Return and reset the accumulated ABSOLUTE axis travel in centi-units
+
 	// Filament monitor support
 	int32_t GetAccumulatedExtrusion(size_t logicalDrive, bool& isPrinting) noexcept;		// Return and reset the accumulated commanded extrusion amount
 	uint32_t ExtruderPrintingSince(size_t logicalDrive) const noexcept;						// When we started doing normal moves after the most recent extruder-only move
@@ -624,6 +631,10 @@ private:
 	DDARing rings[NumMovementSystems];
 
 	DriveMovement dms[MaxAxesPlusExtruders + NumDirectDrivers];		// One DriveMovement object per logical drive, plus an extra one for each local driver to support bed levelling moves
+
+	// Absolute axis travel since the last poll, in hundredths of each axis's unit. Written by the
+	// DDA from the move task, drained by PrinterStatistics from the main task, hence atomic.
+	std::atomic<uint32_t> axisTravelAccumulator[MaxAxes];
 
 	float driveStepsPerMm[MaxAxesPlusExtruders];
 	uint16_t microstepping[MaxAxesPlusExtruders];					// the microstepping used for each axis or extruder, top bit is set if interpolation enabled

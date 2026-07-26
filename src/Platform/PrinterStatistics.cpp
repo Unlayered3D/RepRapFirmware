@@ -51,6 +51,18 @@ void PrinterStatistics::Spin() noexcept
 		}
 	}
 
+	// Axis travel, drained the same way. Kept separate from the motor counters above because on a
+	// differential kinematic the two are not interchangeable - see the header.
+	for (size_t axis = 0; axis < MaxAxes; ++axis)
+	{
+		const uint32_t travel = move.GetAccumulatedAxisTravel(axis);
+		if (travel != 0)
+		{
+			axisCentiUnits[axis] += (uint64_t)travel;
+			dirty = true;
+		}
+	}
+
 	// Print time and job count. A job is counted on the idle->printing transition, so this
 	// is jobs STARTED. armedForNewJob is only re-armed once we are neither printing nor
 	// paused, which stops a pause/resume cycle from counting as a second job.
@@ -106,6 +118,11 @@ void PrinterStatistics::Save() noexcept
 	for (size_t i = 0; i < MaxAxesPlusExtruders; ++i)
 	{
 		buffer.catf("%s%" PRIu64, (i == 0) ? "" : ", ", driveMicrosteps[i]);
+	}
+	buffer.cat("],\n  \"axisCentiUnits\": [");
+	for (size_t i = 0; i < MaxAxes; ++i)
+	{
+		buffer.catf("%s%" PRIu64, (i == 0) ? "" : ", ", axisCentiUnits[i]);
 	}
 	buffer.cat("]\n}\n");
 
@@ -207,14 +224,18 @@ void PrinterStatistics::Load() noexcept
 	lifetimePrintSeconds = (uint32_t)parseValue("\"lifetimePrintSeconds\":");
 	lifetimePrintJobs = (uint32_t)parseValue("\"lifetimePrintJobs\":");
 
-	// driveMicrosteps[] only exists in v2. When loading a v1 file the key is absent and the
-	// per-motor counters stay at zero, because v1's per-axis travel cannot be converted to
-	// per-motor microsteps.
-	const char *arr = strstr(buffer, "\"driveMicrosteps\":");
-	if (arr != nullptr && (arr = strchr(arr, '[')) != nullptr)
+	// Parse a JSON array of unsigned values into dest[]. A missing key leaves dest[] untouched, and a
+	// file holding fewer entries than this board has drives fills only what it provides - which is
+	// what makes an SD card moved from a 12-drive board to a 32-drive one load cleanly.
+	auto parseArray = [&buffer](const char *key, uint64_t dest[], size_t maxEntries) noexcept
 	{
+		const char *arr = strstr(buffer, key);
+		if (arr == nullptr || (arr = strchr(arr, '[')) == nullptr)
+		{
+			return;
+		}
 		++arr;
-		for (size_t i = 0; i < MaxAxesPlusExtruders && *arr != '\0' && *arr != ']'; )
+		for (size_t i = 0; i < maxEntries && *arr != '\0' && *arr != ']'; )
 		{
 			while (*arr == ' ' || *arr == ',' || *arr == '\t' || *arr == '\n' || *arr == '\r')
 			{
@@ -230,9 +251,15 @@ void PrinterStatistics::Load() noexcept
 				value = (value * 10) + (uint64_t)(*arr - '0');
 				++arr;
 			}
-			driveMicrosteps[i++] = value;
+			dest[i++] = value;
 		}
-	}
+	};
+
+	// driveMicrosteps[] appeared in v2, axisCentiUnits[] in v3. A missing key leaves those counters
+	// at zero: v1's per-axis travel is not convertible to per-motor microsteps, and a v2 file simply
+	// predates axis tracking, so C revolutions start counting from the upgrade.
+	parseArray("\"driveMicrosteps\":", driveMicrosteps, MaxAxesPlusExtruders);
+	parseArray("\"axisCentiUnits\":", axisCentiUnits, MaxAxes);
 }
 
 // Append a human-readable summary. Motor travel is stored in microsteps, so it is converted
@@ -282,6 +309,24 @@ void PrinterStatistics::Report(const StringRef& reply) const noexcept
 			units = (double)driveMicrosteps[drive] / (double)stepsPerUnit;
 		}
 		reply.catf("    E%u: %.1f mm (%" PRIu64 " usteps)\n", (unsigned int)e, units, driveMicrosteps[drive]);
+	}
+
+	// Per-axis travel. This is the figure to use for anything mounted on an axis rather than on a
+	// motor - a slip ring on C, a rotary union, a drag chain - because on a differential kinematic
+	// the per-motor numbers above have two axes mixed into them.
+	reply.cat("  Per-axis travel (absolute commanded):\n");
+	const AxesBitmap rotationalAxes = move.GetRotationalAxes();
+	for (size_t axis = 0; axis < numAxes; ++axis)
+	{
+		const double units = (double)axisCentiUnits[axis] / 100;
+		if (rotationalAxes.IsBitSet(axis))
+		{
+			reply.catf("    %c: %.1f deg (%.2f revolutions)\n", axisLetters[axis], units, units / 360);
+		}
+		else
+		{
+			reply.catf("    %c: %.1f mm\n", axisLetters[axis], units);
+		}
 	}
 }
 

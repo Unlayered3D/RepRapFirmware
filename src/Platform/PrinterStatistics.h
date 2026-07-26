@@ -32,18 +32,26 @@ private:
 	// separators. Sized from the array so it cannot silently overflow as boards grow, but never
 	// below 1024 - an SD card moved from a 32-drive board (MB6HC) to a 12-drive one (Duet 3 Mini)
 	// carries a file sized for 32 entries, and the reader must still be able to take it in.
-	static constexpr size_t SizedJsonBuffer = 128 + (MaxAxesPlusExtruders * 24);
+	static constexpr size_t SizedJsonBuffer = 128 + ((MaxAxesPlusExtruders + MaxAxes) * 24);
 	static constexpr size_t JsonBufferSize = (SizedJsonBuffer < 1024) ? 1024 : SizedJsonBuffer;
 
 	static constexpr const char *StatsFileName = "0:/sys/printerstats.json";
 	static constexpr const char *StatsTempFileName = "0:/sys/printerstats.tmp";
-	static constexpr uint32_t FileFormatVersion = 2;		// v1 stored per-AXIS travel, which is not convertible to per-motor microsteps
+	// v1 stored per-axis travel in a form not convertible to per-motor microsteps.
+	// v2 added driveMicrosteps[]. v3 added axisCentiUnits[]. Older files load with the newer
+	// counters at zero, because Load() yields 0 for any key that is absent.
+	static constexpr uint32_t FileFormatVersion = 3;
 	static constexpr uint32_t SaveIntervalMs = 60000;	// never write the SD card more often than this
 
 	// --- Persisted counters ---
 	uint32_t lifetimePrintSeconds = 0;					// total time spent actually printing (~136 years of range)
 	uint32_t lifetimePrintJobs = 0;						// print jobs STARTED, counted on the idle->printing transition
 	uint64_t driveMicrosteps[MaxAxesPlusExtruders] = { 0 };	// absolute commanded motor travel per logical drive
+	// Absolute commanded travel per AXIS, in hundredths of that axis's unit (mm, or degrees for a
+	// rotary axis). Not derivable from driveMicrosteps: on a differential kinematic such as CoreXBYC
+	// the Y and C axes share motors, so motor travel cannot be unmixed back into axis travel. This is
+	// what answers "how many C revolutions has the slip ring done" - see Report().
+	uint64_t axisCentiUnits[MaxAxes] = { 0 };
 
 	// --- Transient state ---
 	uint32_t lastUpdateMs = 0;							// millis() at the previous Spin()
