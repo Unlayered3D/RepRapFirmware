@@ -87,10 +87,12 @@ response with `rr_reply`.
 
 | Code | Purpose |
 |---|---|
+| `G33` | Run `calibrate.g`, the machine calibration macro. Same locking as `G32` |
 | `M1750` | MMU2S control — see the fork doc for all subcommands |
 | `M201.2 P<motor> S<mm/s^2>` | Per-motor maximum acceleration |
 | `M203.2 P<motor> S<mm/min>` | Per-motor maximum feedrate |
 | `M205.2 P<motor> S<mm/s>` | Per-motor maximum jerk |
+| `M557.1 I<0\|1> Q<mm>` | Height-map interpolation: `I0` bilinear (default), `I1` bicubic. `Q` sets the segmentation chord tolerance; `Q0` restores the fixed 2-segments-per-cell rule |
 | `M669 K16 A D R Q X Y U V W B P` | Five-axis geometry. **`Q` sets cRatio, not `S`** — an `S` parameter is silently ignored |
 | `M122` | Last diagnostics part reports lifetime/per-motor wear statistics |
 

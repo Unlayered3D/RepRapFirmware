@@ -14,6 +14,11 @@
 class DataTransfer;
 class Deviation;
 
+// The scheme used to interpolate between grid points when evaluating the height map.
+// 'linear' is bilinear, which is C0 continuous only: the slope of the compensated surface changes abruptly at every grid line.
+// 'cubic' is bicubic Catmull-Rom, which is C1 (tangent) continuous everywhere and still passes through every probed point.
+enum class MeshInterpolation : uint8_t { linear = 0, cubic = 1 };
+
 // This class defines the bed probing grid
 class GridDefinition INHERIT_OBJECT_MODEL
 {
@@ -100,6 +105,13 @@ public:
 	bool UseHeightMap(bool b) noexcept;
 	bool UsingHeightMap() const noexcept { return useMap; }
 
+	// Interpolation scheme and segmentation tolerance. These are machine settings, not map data, so they survive SetGrid and are not stored in the height map file.
+	void SetInterpolation(MeshInterpolation m) noexcept { interpolation = m; }
+	MeshInterpolation GetInterpolation() const noexcept { return interpolation; }
+	const char *_ecv_array GetInterpolationName() const noexcept;
+	void SetChordTolerance(float t) noexcept { chordTolerance = (t > 0.0) ? t : 0.0; }
+	float GetChordTolerance() const noexcept { return chordTolerance; }
+
 	unsigned int GetStatistics(Deviation& deviation, float& minError, float& maxError) const noexcept;	// Return number of points probed, mean and RMS deviation, min and max error
 	bool CanProbePoint(size_t axis0Index, size_t axis1Index) const noexcept;			// Return true if we can probe this point
 	void ExtrapolateMissing() noexcept;													// Extrapolate missing points to ensure consistency
@@ -127,12 +139,19 @@ private:
 #if SUPPORT_PROBE_POINTS_FILE
 	LargeBitmap<MaxGridProbePoints> gridPointInvalid;				// Bitmap of which points are not valid
 #endif
+	float chordTolerance;											// Max allowed deviation in mm between the segment chords and the mesh surface, 0 = use the legacy fixed rule
+	float maxSecondDiff[2];											// Largest absolute second difference of the grid heights along each axis, used to bound the surface curvature
+	MeshInterpolation interpolation;								// How we interpolate between grid points
+	bool curvatureValid;											// True if maxSecondDiff is up to date with the current grid heights
 	bool useMap;													// True to do bed compensation
 
 	size_t GetMapIndex(size_t axis0Index, size_t axis1Index) const noexcept { return (axis1Index * def.NumAxisPoints(0)) + axis0Index; }
 	void SetGridHeight(size_t index, float height) noexcept;							// Set the height of a grid point
 
 	float InterpolateAxis0Axis1(size_t axis0Index, size_t axis1Index, float axis0Frac, float axis1Frac) const noexcept;
+	float InterpolateAxis0Axis1Cubic(int axis0Index, int axis1Index, float axis0Frac, float axis1Frac) const noexcept;
+	float InterpolateRowCubic(size_t axis1Index, int axis0Index, float axis0Frac) const noexcept;
+	void ComputeCurvatureBounds() noexcept;								// Recompute maxSecondDiff from the current grid heights
 
 #if SUPPORT_PROBE_POINTS_FILE
 	bool InterpolateMissingPoint(size_t axis0Index, size_t axis1Index, float& height) const noexcept;

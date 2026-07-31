@@ -756,6 +756,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 		GCodeResult result;
 		if (   gb.GetCommandFraction() > 0
 			&& code != 36 && code != 201 && code != 203 && code != 205 && code != 260 && code != 261 && code != 505
+			&& code != 557
 #if SUPPORT_SCANNING_PROBES
 			&& code != 558
 #endif
@@ -3761,8 +3762,10 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 			}
 
-			case 557: // Set/report Z probe point coordinates
-				result = DefineGrid(gb, reply);
+			case 557: // Set/report Z probe point coordinates; M557.1 set/report how the height map is interpolated and segmented
+				result =   (gb.GetCommandFraction() <= 0) ? DefineGrid(gb, reply)
+						 : (gb.GetCommandFraction() == 1) ? ConfigureMeshInterpolation(gb, reply)
+						 : GCodeResult::errorNotSupported;
 				break;
 
 			case 558: // Set or report Z probe type and for which axes it is used; M558.1 calibrate Z probe; M558.2 calibrate scanning Z probe drive strength

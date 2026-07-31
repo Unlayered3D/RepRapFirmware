@@ -237,6 +237,8 @@ constexpr ObjectModelTableEntry Move::objectModelTable[] =
 #endif
 	{ "liveGrid",				OBJECT_MODEL_FUNC_IF(self->usingMesh, (const GridDefinition *)&self->GetGrid()),				ObjectModelEntryFlags::none },
 	{ "meshDeviation",			OBJECT_MODEL_FUNC_IF(self->usingMesh, self, 7),													ObjectModelEntryFlags::none },
+	{ "meshInterpolation",		OBJECT_MODEL_FUNC(self->heightMap.GetInterpolationName()),										ObjectModelEntryFlags::none },
+	{ "meshTolerance",			OBJECT_MODEL_FUNC(self->heightMap.GetChordTolerance(), 3),										ObjectModelEntryFlags::none },
 	{ "probeGrid",				OBJECT_MODEL_FUNC_NOSELF((const GridDefinition *)&reprap.GetGCodes().GetDefaultGrid()),			ObjectModelEntryFlags::none },
 	{ "skew",					OBJECT_MODEL_FUNC(self, 8),																		ObjectModelEntryFlags::none },
 	{ "type",					OBJECT_MODEL_FUNC(self->GetCompensationTypeString()),											ObjectModelEntryFlags::none },
@@ -348,7 +350,7 @@ constexpr uint8_t Move::objectModelTableDescriptor[] =
 	3,																		// section 3
 	2,																		// section 4
 	2,																		// section 5
-	6 + (int)(HAS_MASS_STORAGE || HAS_SBC_INTERFACE),						// section 6
+	8 + (int)(HAS_MASS_STORAGE || HAS_SBC_INTERFACE),						// section 6
 	2,																		// section 7
 	4,																		// section 8
 #ifdef DUET_NG	// Duet WiFi/Ethernet doesn't have settable standstill current and doesn't support phase stepping

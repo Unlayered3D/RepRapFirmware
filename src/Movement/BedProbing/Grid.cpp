@@ -130,7 +130,8 @@ void GridDefinition::CheckValidity(bool setNum0Num1) noexcept
 		const size_t axis1NumForLetter = reprap.GetGCodes().GetAxisNumberForLetter(letters[1]);
 		const size_t numVisibleAxes = reprap.GetGCodes().GetVisibleAxes();
 
-		isValid = NumPoints() != 0 && NumPoints() <= MaxGridProbePoints
+		// We need at least 2 points on each axis. With only one, the interpolation code computes a negative grid index and reads out of bounds.
+		isValid = nums[0] >= 2 && nums[1] >= 2 && NumPoints() <= MaxGridProbePoints
 				&& (radius < 0.0 || radius >= 1.0)
 				&& nums[0] <= MaxAxis0GridPoints
 				&& letters[0] != letters[1]
@@ -298,6 +299,10 @@ void GridDefinition::PrintError(float originalAxis0range, float originalAxis1ran
 	{
 		r.catf("%c range too small", letters[1]);
 	}
+	else if (nums[0] < 2 || nums[1] < 2)
+	{
+		r.cat("Spacing too large; need at least 2 points on each axis");
+	}
 	else if (   nums[0] > MaxAxis0GridPoints
 			 || nums[0] > MaxGridProbePoints || nums[1] > MaxGridProbePoints		// check X and Y individually in case X*Y overflows
 			 || NumPoints() > MaxGridProbePoints
@@ -316,7 +321,10 @@ void GridDefinition::PrintError(float originalAxis0range, float originalAxis1ran
 	}
 }
 
-HeightMap::HeightMap() noexcept : useMap(false) { }
+HeightMap::HeightMap() noexcept : chordTolerance(DefaultMeshChordTolerance), interpolation(MeshInterpolation::linear), curvatureValid(false), useMap(false)
+{
+	maxSecondDiff[0] = maxSecondDiff[1] = 0.0;
+}
 
 void HeightMap::SetGrid(const GridDefinition& gd) noexcept
 {
@@ -328,9 +336,15 @@ void HeightMap::SetGrid(const GridDefinition& gd) noexcept
 void HeightMap::ClearGridHeights() noexcept
 {
 	gridHeightSet.ClearAll();
+	curvatureValid = false;					// the curvature bounds no longer describe the (now empty) map
 #if HAS_MASS_STORAGE
 	fileName.Clear();
 #endif
+}
+
+const char *_ecv_array HeightMap::GetInterpolationName() const noexcept
+{
+	return (interpolation == MeshInterpolation::cubic) ? "cubic" : "linear";
 }
 
 // Set the height of a grid point
@@ -358,7 +372,61 @@ unsigned int HeightMap::GetMinimumSegments(float deltaAxis0, float deltaAxis1) c
 	const float axis1Distance = fabsf(deltaAxis1);
 	const unsigned int axis1Segments = (unsigned int)(2 * axis1Distance * def.recipAxisSpacings[1]) + 1;
 
-	return max<unsigned int>(axis0Segments, axis1Segments);
+	// Two segments per grid cell is the right discretisation for a piecewise-linear surface, and it is the floor in every case so that we never
+	// do worse than we used to. With a C1 surface and a chord tolerance configured, we can do better by taking the actual bed curvature into account.
+	const unsigned int legacySegments = max<unsigned int>(axis0Segments, axis1Segments);
+	if (interpolation != MeshInterpolation::cubic || chordTolerance <= 0.0 || !curvatureValid)
+	{
+		return legacySegments;
+	}
+
+	const float len = fastSqrtf(fsquare(axis0Distance) + fsquare(axis1Distance));
+	if (len < MinMeshSegmentLength)
+	{
+		return legacySegments;
+	}
+
+	// Bound the second derivative of the surface with respect to distance travelled. For a Catmull-Rom span the second derivative at the ends is
+	// 2*D1 - D2 in node units, where D1 and D2 are the second differences of the surrounding nodes, so it is bounded by 3 times the largest one.
+	const float recipLen = 1.0/len;
+	const float u0 = axis0Distance * recipLen, u1 = axis1Distance * recipLen;
+	const float curvature = 3.0 * (  (maxSecondDiff[0] * fsquare(u0 * def.recipAxisSpacings[0]))
+								   + (maxSecondDiff[1] * fsquare(u1 * def.recipAxisSpacings[1]))
+								  );
+	if (curvature <= 0.0)
+	{
+		return legacySegments;						// the map is exactly planar over the whole bed, so chords are exact
+	}
+
+	// The sagitta of a chord of length h across a curve of curvature k is about k*h^2/8. Solve k*h^2/8 <= tolerance for h, then divide the move by it.
+	const unsigned int curvatureSegments = (unsigned int)(len * fastSqrtf(curvature/(8.0 * chordTolerance))) + 1;
+	const unsigned int maxSegments = max<unsigned int>((unsigned int)(len/MinMeshSegmentLength), 1);
+	return constrain<unsigned int>(max<unsigned int>(legacySegments, curvatureSegments), 1, max<unsigned int>(maxSegments, legacySegments));
+}
+
+// Recompute the bound we use on the curvature of the interpolated surface. Called whenever the grid heights change wholesale, i.e. from
+// ExtrapolateMissing() which is the single point reached after both G29 probing and loading a height map from file.
+void HeightMap::ComputeCurvatureBounds() noexcept
+{
+	maxSecondDiff[0] = maxSecondDiff[1] = 0.0;
+	for (uint32_t iAxis1 = 0; iAxis1 < def.nums[1]; ++iAxis1)
+	{
+		for (uint32_t iAxis0 = 0; iAxis0 < def.nums[0]; ++iAxis0)
+		{
+			const uint32_t index = GetMapIndex(iAxis0, iAxis1);
+			if (iAxis0 != 0 && iAxis0 + 1 < def.nums[0])
+			{
+				const float d2 = fabsf(gridHeights[index - 1] - (2 * gridHeights[index]) + gridHeights[index + 1]);
+				maxSecondDiff[0] = max<float>(maxSecondDiff[0], d2);
+			}
+			if (iAxis1 != 0 && iAxis1 + 1 < def.nums[1])
+			{
+				const float d2 = fabsf(gridHeights[index - def.nums[0]] - (2 * gridHeights[index]) + gridHeights[index + def.nums[0]]);
+				maxSecondDiff[1] = max<float>(maxSecondDiff[1], d2);
+			}
+		}
+	}
+	curvatureValid = true;
 }
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
@@ -604,6 +672,53 @@ bool HeightMap::CanProbePoint(size_t axis0Index, size_t axis1Index) const noexce
 	return def.IsInRadius(axis0Coord, axis1Coord);
 }
 
+// Evaluate the Catmull-Rom cubic (Keys cubic convolution with a = -0.5) through 4 equally-spaced values, with t in [0..1] between p1 and p2.
+// Neighbouring spans share the same node tangents, so the resulting piecewise cubic is C1 continuous.
+static inline float CatmullRom(float p0, float p1, float p2, float p3, float t) noexcept
+{
+	const float c1 = 0.5 * (p2 - p0);
+	const float c2 = p0 - (2.5 * p1) + (2.0 * p2) - (0.5 * p3);
+	const float c3 = (0.5 * (p3 - p0)) + (1.5 * (p1 - p2));
+	return (((c3 * t) + c2) * t + c1) * t + p1;
+}
+
+// Interpolate along axis 0 within a single grid row, using a Catmull-Rom cubic through the 4 nodes centred on the span [axis0Index, axis0Index + 1].
+// Nodes outside the grid are synthesised by linear extrapolation from the two nearest real ones. That keeps the surface C1 right up to the boundary
+// and continues the edge slope, whereas clamping the index would flatten it. The caller clamps the query point into the grid rectangle, so an index
+// can only ever be one step outside, hence a single extrapolation step is enough.
+float HeightMap::InterpolateRowCubic(size_t axis1Index, int axis0Index, float axis0Frac) const noexcept
+{
+	const int lastAxis0 = (int)def.nums[0] - 1;
+	const float *_ecv_array const row = gridHeights + (axis1Index * def.nums[0]);
+	float p[4];
+	for (int k = 0; k < 4; ++k)
+	{
+		const int index = axis0Index + k - 1;
+		p[k] =   (index < 0)			? (2 * row[0]) - row[1]
+			   : (index > lastAxis0)	? (2 * row[lastAxis0]) - row[lastAxis0 - 1]
+										: row[index];
+	}
+	return CatmullRom(p[0], p[1], p[2], p[3], axis0Frac);
+}
+
+// Bicubic Catmull-Rom interpolation over the 4x4 stencil centred on cell (axis0Index, axis1Index).
+// Separable: interpolate 4 rows along axis 0, then interpolate those 4 results along axis 1.
+float HeightMap::InterpolateAxis0Axis1Cubic(int axis0Index, int axis1Index, float axis0Frac, float axis1Frac) const noexcept
+{
+	const int lastAxis1 = (int)def.nums[1] - 1;
+	float r[4];
+	for (int k = 0; k < 4; ++k)
+	{
+		const int index = axis1Index + k - 1;
+		// Extrapolating the interpolated row values is exactly equivalent to extrapolating the nodes they were built from,
+		// because the axis 0 pass is linear in the node heights.
+		r[k] =   (index < 0)			? (2 * InterpolateRowCubic(0, axis0Index, axis0Frac)) - InterpolateRowCubic(1, axis0Index, axis0Frac)
+			   : (index > lastAxis1)	? (2 * InterpolateRowCubic(lastAxis1, axis0Index, axis0Frac)) - InterpolateRowCubic(lastAxis1 - 1, axis0Index, axis0Frac)
+										: InterpolateRowCubic((size_t)index, axis0Index, axis0Frac);
+	}
+	return CatmullRom(r[0], r[1], r[2], r[3], axis1Frac);
+}
+
 // Compute the height error at the specified point
 float HeightMap::GetInterpolatedHeightError(float axis0, float axis1) const noexcept
 {
@@ -631,7 +746,9 @@ float HeightMap::GetInterpolatedHeightError(float axis0, float axis1) const noex
 	const float yFloor = floorf(yf);
 	const int32_t yIndex = (int32_t)yFloor;
 
-	return InterpolateAxis0Axis1(xIndex, yIndex, xf - xFloor, yf - yFloor);
+	return (interpolation == MeshInterpolation::cubic)
+			? InterpolateAxis0Axis1Cubic((int)xIndex, (int)yIndex, xf - xFloor, yf - yFloor)
+				: InterpolateAxis0Axis1(xIndex, yIndex, xf - xFloor, yf - yFloor);
 }
 
 float HeightMap::InterpolateAxis0Axis1(size_t axis0Index, size_t axis1Index, float axis0Frac, float axis1Frac) const noexcept
@@ -709,6 +826,7 @@ void HeightMap::ExtrapolateMissing() noexcept
 	if (detZ <= 0.0)
 	{
 		// Not a valid plane (or a vertical one)
+		ComputeCurvatureBounds();
 		return;
 	}
 
@@ -743,6 +861,8 @@ void HeightMap::ExtrapolateMissing() noexcept
 			}
 		}
 	}
+
+	ComputeCurvatureBounds();				// every grid height is now populated, so the curvature bound can be established
 }
 
 #if SUPPORT_PROBE_POINTS_FILE

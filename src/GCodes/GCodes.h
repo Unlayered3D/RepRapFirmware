@@ -502,6 +502,7 @@ private:
 
 	// Bed probing
 	GCodeResult DefineGrid(GCodeBuffer& gb, const StringRef &reply) THROWS(GCodeException);	// Define the probing grid, returning true if error
+	GCodeResult ConfigureMeshInterpolation(GCodeBuffer& gb, const StringRef &reply) THROWS(GCodeException);	// Handle M557.1
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
 	GCodeResult LoadHeightMap(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);		// Load the height map from file
 	bool TrySaveHeightMap(const char *_ecv_array filename, const StringRef& reply) const noexcept;				// Save the height map to the specified file

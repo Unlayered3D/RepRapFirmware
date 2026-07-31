@@ -74,6 +74,37 @@ Format v1 stored per-*axis* travel, which cannot be converted to per-motor micro
 a v1 file is loaded, print time and job count carry over and the per-motor counters start at
 zero.
 
+### 5. Height-map interpolation and segmentation — `M557.1`
+
+`src/Movement/BedProbing/Grid.{h,cpp}`. `M557.1 I<0|1> Q<mm>`; bare `M557.1` reports. Both are
+machine settings, not map data, so they survive `SetGrid` and are not written to the height map
+file. Exposed as `move.meshInterpolation` and `move.meshTolerance` in the object model.
+
+`I0` is upstream's bilinear interpolation, the default. `I1` selects bicubic Catmull-Rom
+(Keys cubic convolution, a = −0.5), which is C1 continuous everywhere and still passes through
+every probed point, so the compensated surface no longer kinks at grid lines. It is separable:
+four rows interpolated along axis 0, then those four results along axis 1. Nodes outside the
+grid are synthesised by linear extrapolation from the two nearest real ones, which continues
+the edge slope rather than flattening it as index clamping would. `GetInterpolatedHeightError`
+clamps the query into the grid rectangle, so an index can only ever be one step outside and a
+single extrapolation step suffices.
+
+`Q` sets the maximum allowed deviation between a segment chord and the true mesh surface.
+`Q0` (the default, `DefaultMeshChordTolerance`) keeps the legacy fixed rule of 2 segments per
+grid cell. With a tolerance set *and* cubic interpolation active, `GetMinimumSegments` derives
+the count from the actual bed curvature instead: `maxSecondDiff[]` bounds the second difference
+of the grid heights along each axis, a Catmull-Rom span's second derivative is bounded by three
+times the largest one, and the sagitta of a chord is about `k·h²/8`. The legacy count is always
+the floor, so this can only ever segment more finely, never less. `MinMeshSegmentLength`
+(0.2 mm) caps the count so a curved bed cannot flood the movement queue.
+
+`maxSecondDiff[]` is recomputed by `ComputeCurvatureBounds()` from `ExtrapolateMissing()`, the
+single point reached after both `G29` probing and loading a map from file, and `curvatureValid`
+gates the curvature path until it has run.
+
+Also fixed here: `GridDefinition::CheckValidity` now requires at least 2 points on each axis.
+With one, the interpolation code computes a negative grid index and reads out of bounds.
+
 ## Build system
 
 Makefiles are the source of truth. `.cproject`/`.project`/`.settings` are still tracked for
@@ -95,8 +126,8 @@ misdiagnose. Collect with a plain `find` and filter with `$(foreach)`/`$(findstr
 
 ## Upstream merge surface
 
-41 files under `src/` differ from upstream, excluding the vendored `MQTT_C` and `Lwip` trees:
-**7 new fork-owned files** plus **34 modified upstream files**. Only the latter 34 can conflict,
+44 files under `src/` differ from upstream, excluding the vendored `MQTT_C` and `Lwip` trees:
+**7 new fork-owned files** plus **37 modified upstream files**. Only the latter 37 can conflict,
 and keeping that number down is what makes merging from `upstream/3.7-dev` tractable.
 
 Regenerate these counts with:
@@ -121,6 +152,7 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
 | G-code dispatch | `GCodes/GCodes.{h,cpp}`, `GCodes2.cpp`, `GCodes4.cpp`, `GCodes6.cpp`, `GCodeMachineState.h`, `StraightProbeSettings.h` | `M1750`, `M201.2/M203.2/M205.2`, `M301/M304` rework, MMU2S state machine |
 | Per-motor limits | `Movement/DDA.{h,cpp}`, `Platform/Platform.cpp` | Store and apply the per-motor limits |
 | Wear tracking | `Movement/DriveMovement.{h,cpp}`, `Movement/Move.{h,cpp}` | `wearAccumulator` + `GetAccumulatedWear` |
+| Mesh interpolation | `Movement/BedProbing/Grid.{h,cpp}`, `Config/Configuration.h`, `Movement/Move.cpp` | Bicubic interpolation + chord-tolerance segmentation, `M557.1`, object-model entries |
 | Statistics host | `Platform/RepRap.{h,cpp}` | Owns `PrinterStatistics`; calls `Spin`/`Init`/`Report` |
 | Heater PID | `Heating/{FOPDT.h,FOPDT.cpp,Heat.h,Heat.cpp,Heater.h}` | `M301`/`M304` PID override support |
 | Input shaping | `Movement/AxisShaper.{h,cpp}` | Three negative shapers (`nzvum`, `nzvdum`, `neium`) |
@@ -129,9 +161,13 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
 | Identity | `Version.h` | `+unlayered.1` suffix so local builds are identifiable |
 | Misc | `RepRapFirmware.h` | Forward declarations |
 
-Deliberately **not** touched, to keep the surface small: `Movement/BedProbing/Grid.cpp`,
+Deliberately **not** touched, to keep the surface small:
 `Movement/Kinematics/CoreKinematics.cpp` and `PolarKinematics.cpp` were reverted to upstream
 in July 2026 because their only local changes were comments (see the design notes below).
+
+`Movement/BedProbing/Grid.{h,cpp}` was reverted at the same time and for the same reason, then
+put back on the surface by feature 5 — this time carrying real functional change, which is the
+bargain that revert was meant to hold out for.
 
 ## Design notes
 
@@ -142,12 +178,18 @@ four surrounding grid points: C0 continuous, but the surface normal jumps at eve
 boundary. The four terms are, in order: the amount unaffected by either axis, the amount
 affected only by axis0, only by axis1, and by both.
 
-Idea for G1 continuity, recorded before the note was reverted out of the upstream file:
+The idea recorded here — give each grid height a slope derived from its neighbours, using the
+one neighbour where only one exists, probably via a Bézier — is **implemented**, as feature 5
+above. Catmull-Rom rather than Bézier: it is the cubic whose node tangents are exactly the
+central difference of the neighbours, which is what "each grid height needs a slope found by
+looking at its neighbours" describes, and it interpolates its control points, so every probed
+height is still hit exactly. Where only one neighbour exists the node is linearly extrapolated
+instead, which continues the edge slope rather than flattening it.
 
-> This is the function to modify to add G1 continuity — look out an additional point in the
-> grid. It is basically a correlation problem: each grid height needs a "slope", found by
-> looking at its neighbours, using just the one neighbour where only one exists. Probably a
-> Bézier.
+The one thing the original note did not anticipate: making the surface C1 is only half the
+win. The segment count was still the fixed 2-per-grid-cell rule sized for a piecewise-linear
+surface, so a C1 surface was being sampled at C0 resolution. `M557.1 Q` closes that by sizing
+segments from the actual curvature — see feature 5.
 
 ### Why the negative shaper coefficients are curve fits
 

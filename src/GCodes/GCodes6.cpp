@@ -375,6 +375,58 @@ GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, const StringRef &reply) THROWS(G
 	return GCodeResult::error;
 }
 
+// Set or report how the height map is interpolated and how finely moves are segmented across it, called when we see an M557.1 command
+GCodeResult GCodes::ConfigureMeshInterpolation(GCodeBuffer& gb, const StringRef &reply) THROWS(GCodeException)
+{
+	HeightMap& heightMap = reprap.GetMove().AccessHeightMap();
+
+	bool seenI = false, seenQ = false;
+	uint32_t mode = 0;
+	float tolerance = 0.0;
+	gb.TryGetLimitedUIValue('I', mode, seenI, 2);
+	gb.TryGetFValue('Q', tolerance, seenQ);
+
+	if (!seenI && !seenQ)
+	{
+		reply.printf("Mesh interpolation is %s", heightMap.GetInterpolationName());
+		if (heightMap.GetChordTolerance() > 0.0)
+		{
+			reply.catf(", segmentation chord tolerance %.3fmm", (double)heightMap.GetChordTolerance());
+		}
+		else
+		{
+			reply.cat(", segmentation is 2 segments per grid cell");
+		}
+		return GCodeResult::ok;
+	}
+
+	// Changing the interpolation scheme changes the bed transform, and the height map is shared by all motion systems,
+	// so don't do it while there are moves in the pipeline using the old one
+	if (!LockAllMovementSystemsAndWaitForStandstill(gb))
+	{
+		return GCodeResult::notFinished;
+	}
+
+	if (seenI)
+	{
+		const MeshInterpolation newMode = (mode == 1) ? MeshInterpolation::cubic : MeshInterpolation::linear;
+		const bool changed = (newMode != heightMap.GetInterpolation());
+		heightMap.SetInterpolation(newMode);
+		if (changed && reprap.GetMove().IsUsingMesh())
+		{
+			// Changing the interpolation scheme changes the correction at the current XY, so the cached user position is now stale.
+			// Re-derive it from the unchanged machine position, exactly as we do when the height map is first activated.
+			ActivateHeightmap(true);
+		}
+	}
+	if (seenQ)
+	{
+		heightMap.SetChordTolerance(tolerance);		// only affects segment counts, so no position update needed
+	}
+	reprap.MoveUpdated();
+	return GCodeResult::ok;
+}
+
 // Start probing the grid, returning true if we didn't because of an error.
 // Prior to calling this the movement system must be locked.
 GCodeResult GCodes::ProbeGrid(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)

@@ -114,6 +114,11 @@ constexpr size_t MaxCalibrationPoints = 32;				// Should a power of 2 for speed
 
 constexpr float DefaultGridSpacing = 20.0;				// Default bed probing grid spacing in mm
 
+// Mesh bed compensation segmentation. The chord tolerance is the maximum allowed deviation between the straight line joining two segment
+// endpoints and the true mesh surface between them. Zero selects the legacy rule of a fixed 2 segments per grid cell.
+constexpr float DefaultMeshChordTolerance = 0.0;		// Default max mesh segmentation chord deviation in mm, 0 = use the legacy fixed rule
+constexpr float MinMeshSegmentLength = 0.2;				// Never divide a move into mesh segments shorter than this, to bound the load on the movement queue
+
 static_assert(MaxCalibrationPoints <= MaxProbePoints, "MaxCalibrationPoints must be <= MaxProbePoints");
 
 constexpr size_t MaxScanningProbeCalibrationPoints = 33;	// The maximum number of heights we measure when calibrating a scanning probe. Use an odd number.
