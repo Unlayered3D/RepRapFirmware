@@ -53,7 +53,18 @@ const unsigned int InitialNumDms = (InitialDdaRingLength/2 * 4) + AuxDdaRingLeng
 
 #elif SAM4E || SAM4S || SAME5x
 
-constexpr unsigned int InitialDdaRingLength = 40;
+// Reduced from upstream's 40 because the MoveSegment pool does not fit alongside it on a five-axis
+// SAME5x board. Segments are allocated with Tasks::AllocPermanent and never returned (MoveSegment.h),
+// so MoveSegment::numCreated is a one-way high-water mark of concurrently-live segments, and the peak
+// scales as ring length * moving drives * motion phases. On coreXBYC every XYZ move drives five motors
+// (X/B share motors 0+3, Y/C share 1+4) plus the extruder, giving ~36 segments per DDA. Measured on the
+// .50 machine with a ring of 40: the peak ratcheted to 1439 segments * 24 bytes = 34.5 kB and plateaued
+// with 256 bytes of RAM to spare, so a slightly worse peak reset the board as OutOfMemory - or, when the
+// permanent heap reached the stack first, as a HardFault with a corrupted stack marker. This is not
+// workload-specific; it is where any long dense five-axis print ends up. 28 puts the peak near 1000
+// segments and leaves >10 kB, at the cost of ~30% less lookahead. M595 can only grow the ring, never
+// shrink it, so this has to be the compile-time value.
+constexpr unsigned int InitialDdaRingLength = 28;
 constexpr unsigned int AuxDdaRingLength = 3;
 const unsigned int InitialNumDms = (InitialDdaRingLength/2 * 4) + AuxDdaRingLength;
 
