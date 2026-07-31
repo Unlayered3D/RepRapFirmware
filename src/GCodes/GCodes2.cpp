@@ -499,6 +499,22 @@ bool GCodes::HandleGcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			DoFileMacroWithParameters(gb, BED_EQUATION_G, true, 32);	// Try to execute bed.g
 			break;
 
+		case 33: // Run the machine calibration macro
+			if (!LockCurrentMovementSystemAndWaitForStandstill(gb))
+			{
+				return false;
+			}
+			BREAK_IF_NOT_EXECUTING
+
+#if SUPPORT_ASYNC_MOVES
+			AllocateAxes(gb, GetMovementState(gb), AxesBitmap::MakeFromBits(Z_AXIS), ParameterLetterToBitmap('Z'));
+#endif
+			// Unlock for the same reason as G32: the macro may do manual probing, which needs to be able to jog Z
+			UnlockAll(gb);
+
+			DoFileMacroWithParameters(gb, CALIBRATE_G, true, 33);	// Try to execute calibrate.g
+			break;
+
 		case 38: // Straight probe - move until either the probe is triggered or the commanded move ends
 			if (!LockCurrentMovementSystemAndWaitForStandstill(gb))
 			{

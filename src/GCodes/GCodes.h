@@ -314,6 +314,7 @@ public:
 	static constexpr const char *_ecv_array CONFIG_BACKUP_FILE = "config.g.bak";
 	static constexpr const char *_ecv_array BED_EQUATION_G = "bed.g";
 	static constexpr const char *_ecv_array MESH_G = "mesh.g";
+	static constexpr const char *_ecv_array CALIBRATE_G = "calibrate.g";
 	static constexpr const char *_ecv_array PAUSE_G = "pause.g";
 	static constexpr const char *_ecv_array RESUME_G = "resume.g";
 	static constexpr const char *_ecv_array CANCEL_G = "cancel.g";
