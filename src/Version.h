@@ -16,7 +16,7 @@
 // Fork identity. Without this a running board is indistinguishable from stock Duet firmware in
 // M115 and in DWC, which matters when several machines run different local builds. Bump
 // FORK_VERSION whenever a build is flashed to a machine that others may need to identify.
-# define FORK_VERSION	"+unlayered.1"
+# define FORK_VERSION	"+unlayered.2"
 # ifdef USE_CAN0
 #  define VERSION_SUFFIX	FORK_VERSION "(CAN0)"
 # elif defined(NO_S_CURVE)
