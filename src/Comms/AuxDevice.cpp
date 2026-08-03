@@ -56,7 +56,25 @@ void AuxDevice::SetMode(AuxMode p_mode) noexcept
 #endif
 		else
 		{
-#if SUPPORT_MODBUS_RTU
+#if SAME5x
+			// One callback slot, two possible users: Modbus needs it to drop the direction line when the
+			// last bit has gone, and half-duplex needs it to throw away the echo of what we just sent.
+			// Modbus wins if both somehow apply, since without it the bus is left driven.
+			AsyncSerial::OnTransmissionEndedFn _ecv_null txEnded = nullptr;
+# if SUPPORT_MODBUS_RTU
+			if (p_mode == AuxMode::device)
+			{
+				txEnded = GlobalTxEndedCallback;
+			}
+			else
+# endif
+			if (halfDuplex)
+			{
+				txEnded = HalfDuplexTxEndedCallback;
+			}
+			uart->SetOnTxEndedCallback(txEnded, CallbackParameter(this));
+			echoBytesPending = 0;			// nothing is in flight across a mode change
+#elif SUPPORT_MODBUS_RTU
 			uart->SetOnTxEndedCallback((p_mode == AuxMode::device) ? GlobalTxEndedCallback : nullptr, CallbackParameter(this));
 #endif
 			uart->begin(baudRate);
@@ -168,6 +186,11 @@ bool AuxDevice::Flush() noexcept
 			const size_t bytesToWrite = min<size_t>(uart->canWrite(), auxOutputBuffer->BytesLeft());
 			if (bytesToWrite > 0)
 			{
+				if (halfDuplex)
+				{
+					// Count what we are about to hear ourselves say, so the echo can be removed exactly.
+					echoBytesPending += bytesToWrite;
+				}
 				uart->print(auxOutputBuffer->Read(bytesToWrite), bytesToWrite);
 			}
 
@@ -500,6 +523,42 @@ void AuxDevice::TxEndedCallback() noexcept
 {
 	uart->DisableTransmit();
 	txNotRx.WriteDigital(false);
+}
+
+#endif
+
+#if SAME5x
+
+// Transmission has ended on a single-wire port, so everything we just sent is now sitting in our own receive
+// buffer. Discard exactly that much and no more.
+//
+// Clearing the whole buffer instead is wrong, and subtly so. A reply is written in several chunks as buffer
+// space frees up, so this fires more than once per reply; clearing at each chunk boundary lops the echo off
+// mid-line, and the orphaned fragment - having no newline of its own - is then concatenated with whatever the
+// far end sends next. The result is one over-long line and "GCode command too long", or a silent discard when
+// the merged line no longer starts with N. Removing precisely the bytes we sent leaves the buffer aligned to
+// a line boundary, which is the whole point.
+//
+// The count cannot run away: it only ever grows by what was handed to the UART, and the echo of those bytes
+// has necessarily arrived by the time transmission ends.
+/*static*/ void AuxDevice::HalfDuplexTxEndedCallback(CallbackParameter cp) noexcept
+{
+	AuxDevice *const dev = (AuxDevice*)cp.vp;
+	if (dev->uart != nullptr)
+	{
+		uint32_t pending = dev->echoBytesPending;
+		while (pending != 0 && dev->uart->available() > 0)
+		{
+			(void)dev->uart->read();
+			--pending;
+		}
+		// Whatever could not be taken is abandoned rather than carried forward. A collision corrupts our own
+		// echo, so fewer bytes return than were sent; carrying the shortfall means the next transmission
+		// discards it out of the far end's data instead, which costs a line every few exchanges and gets
+		// worse the busier the wire is. Abandoning it leaves at most the tail of our own reply - and since
+		// replies end in a newline, what survives is an empty line, which the parser drops.
+		dev->echoBytesPending = 0;
+	}
 }
 
 #endif

@@ -2265,6 +2265,24 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 #if NUM_ASYNC_CHANNELS != 0
 	// If a baud rate has been provided, just store it for later use
 	const uint32_t baudRate = (gb.Seen('B')) ? gb.GetUIValue() : 0;
+
+	// Unlayered: H1 selects single-wire (half-duplex) operation, where the port's transmit and receive share
+	// one conductor and everything we send is echoed back into our own receiver. Without this, RRF parses its
+	// own replies as commands, reports "Bad command", transmits that error, parses it again, and the port
+	// saturates within seconds - the requirement for a checksum does not save it, and neither does raw mode.
+	//
+	// Stored on the device now and applied by SetMode below, the same contract SetBaudRate has.
+	bool halfDuplex = false, seenHalfDuplex = false;
+	gb.TryGetBValue('H', halfDuplex, seenHalfDuplex);
+	if (seenHalfDuplex)
+	{
+		if (chan < FirstAuxChannel)
+		{
+			reply.copy("Half-duplex mode not supported on this port");
+			return GCodeResult::error;
+		}
+		auxDevices[chan - FirstAuxChannel].SetHalfDuplex(halfDuplex);
+	}
 #endif
 
 	// See if a mode is provided
@@ -2349,9 +2367,19 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 		   )
 		{
 			gbp->Enable(val);						// enable I/O and set the CRC and checksum requirements
-			if (auxModes[chan] == AuxMode::panelDue)
+			// Unlayered: this tested auxModes[chan], indexing the S-value table by channel number, so the
+			// compatibility applied bore no relation to the mode actually requested. Test newMode instead.
+			if (newMode == AuxMode::panelDue)
 			{
 				gbp->LatestMachineState().compatibility.Assign(Compatibility::RepRapFirmware);
+			}
+			else if (newMode == AuxMode::raw)
+			{
+				// Raw mode means a generic GCode host is attached (Pronterface, OctoPrint, a BTT TFT).
+				// They all expect Marlin-style "ok" acknowledgements. Without them a BTT TFT stalls for a
+				// full ACK timeout on every command sent before M115 completes, because its ACK path needs
+				// either a literal "ok" or a firmware type it can only learn from M115's own reply.
+				gbp->LatestMachineState().compatibility.Assign(Compatibility::Marlin);
 			}
 		}
 		reprap.InputsUpdated();
@@ -2365,6 +2393,13 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 			ResetChannel(chan);
 			reprap.InputsUpdated();
 		}
+	}
+	else if (seenHalfDuplex)
+	{
+		// H on its own. The flag is stored but the transmission-ended callback is only wired up by SetMode,
+		// so re-apply the current mode to make it take effect.
+		ResetChannel(chan);
+		reprap.InputsUpdated();
 	}
 #endif
 	else
@@ -2402,6 +2437,10 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 				else
 				{
 					reply.cat(crcMode);
+				}
+				if (auxDevices[chan - FirstAuxChannel].IsHalfDuplex())
+				{
+					reply.cat(", half-duplex");
 				}
 			}
 			else

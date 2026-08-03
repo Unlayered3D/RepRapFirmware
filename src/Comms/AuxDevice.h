@@ -40,6 +40,12 @@ public:
 	bool IsEnabledForGCodeIo() const noexcept { return mode == AuxMode::raw || mode == AuxMode::panelDue; }
 	void SetMode(AuxMode p_mode) noexcept;
 	void SetBaudRate(uint32_t p_baudRate) noexcept { baudRate = p_baudRate; }			// must call SetMode after calling this to actually change the baud rate
+
+	// Single-wire (half-duplex) operation, where transmit and receive share one conductor and everything we
+	// send is echoed straight back into our own receiver. Discard that echo the moment we stop transmitting.
+	// Must call SetMode after calling this, like SetBaudRate.
+	void SetHalfDuplex(bool b) noexcept { halfDuplex = b; }
+	bool IsHalfDuplex() const noexcept { return halfDuplex; }
 	void Disable() noexcept;
 	AuxMode GetMode() const noexcept { return mode; }
 	uint32_t GetBaudRate() const noexcept { return baudRate; }
@@ -74,6 +80,10 @@ public:
 private:
 	uint32_t CalcTransmissionTime(unsigned int numChars) const noexcept;	// calculate the time in milliseconds to send or received the specified number of characters
 
+#if SAME5x
+	static void HalfDuplexTxEndedCallback(CallbackParameter cp) noexcept;
+#endif
+
 #if SUPPORT_MODBUS_RTU
 	void ModbusWriteByte(uint8_t b) noexcept;
 	void ModbusWriteWord(uint16_t w) noexcept;
@@ -96,6 +106,8 @@ private:
 	uint32_t seq;							// sequence number for output in PanelDue mode
 	uint32_t baudRate;
 	AuxMode mode = AuxMode::disabled;		// whether disabled, raw, PanelDue mode or Modbus RTU mode
+	bool halfDuplex = false;				// true if transmit and receive share one wire, so our own output comes back at us
+	volatile uint32_t echoBytesPending = 0;	// half duplex: bytes we have transmitted whose echo is still to be discarded
 
 #if SUPPORT_MODBUS_RTU
 	IoPort txNotRx;							// port used to switch the RS485 port between transmit and receive
