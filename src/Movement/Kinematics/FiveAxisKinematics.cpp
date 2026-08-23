@@ -558,17 +558,23 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 
 	//Rotation matricies are orthagonal. R^-1 = R^T
 	//this is great since our matrices are not square lol :skull:
+	// The forward transform is rotated = R1*machinePos + off(B), where off(B) is the a5/bSkew/d6 arm offset
+	// built from rotationMatrix2 with the (cosT5 - 1) trick. The inverse is therefore
+	// machinePos = R1^T * (rotated - off(B)) - the offset must come off BEFORE un-rotating, otherwise the
+	// result is wrong by (R1^T - I)*off(B) whenever C is away from zero (~88mm in X at C=180, B=-90).
+	// off(B) has no B or C components (rotationMatrix2 rows 3 and 4 are zero), so the angles read from
+	// rotatedPosition[3]/[4] above are unaffected.
+	for (size_t i = 0; i < numTotalAxes; ++i) {
+		rotatedPosition[i] -= getRotationMatrixValue(rotationMatrix2(i, 0),
+				cosT5 - 1, sinT5) * a5;
+		rotatedPosition[i] -= getRotationMatrixValue(rotationMatrix2(i, 1), cosT5-1, sinT5) * bSkew;
+		rotatedPosition[i] -= getRotationMatrixValue(rotationMatrix2(i, 2),
+				cosT5 - 1, sinT5) * d6;
+	}
+
 	//iterate over the positions to calculate real values
 	for (size_t i = 0; i < numTotalAxes; ++i) {
-
-		//now we offset the X and Z based on the angle of the nozzle. It is also noted that the a5 and d6 offsets are subtracted out with the cos-1.
-		//This is important because otherwise the printer will not home properly. It is more efficient to do it this way rather than ...*a5 - a5
-		//note the negative sign. This does not need an inverse since this is calculated off of rotations and simply applies a cartesian offset
-		machinePos[i] = -getRotationMatrixValue(rotationMatrix2(i, 0),
-				cosT5 - 1, sinT5) * a5;
-		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i, 1), cosT5-1, sinT5) * bSkew;
-		machinePos[i] -= getRotationMatrixValue(rotationMatrix2(i, 2),
-				cosT5 - 1, sinT5) * d6;
+		machinePos[i] = 0.0;
 
 		for (size_t j = 0; j < numTotalAxes; ++j) {
 
@@ -579,8 +585,6 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 		}
 
 	}
-
-	//ok i have no idea if this will actually work.
 
 }
 

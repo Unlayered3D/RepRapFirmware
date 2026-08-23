@@ -2725,7 +2725,11 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 #if !SUPPORT_ASYNC_MOVES
 				const bool meshCompensationInUse = IsUsingMeshCompensation(ms, gb.AllParameters() & allAxisLetters);
 #endif
-				if (meshCompensationInUse)
+				// Mesh segmentation must not override the kinematics' G0 exemption: on rotary-coupled kinematics,
+				// segments are interpolated in the emitted (bed) frame, so segmenting a rapid that swings C makes
+				// the head track the rotating bed instead of holding still. Rapids are single-DDA by design there.
+				if (meshCompensationInUse
+					&& (!st.useSegmentation || ms.raw.hasPositiveExtrusion || ms.raw.isCoordinated || st.useG0Segmentation))
 				{
 					const HeightMap& heightMap = move.AccessHeightMap();
 					const GridDefinition& grid = heightMap.GetGrid();
@@ -3369,7 +3373,10 @@ bool GCodes::ReadMove(MovementSystemNumber queueNumber, RawMove& m) noexcept
 			}
 
 			// Limit the end position at each segment. This is needed for arc moves on any printer, and for [segmented] straight moves on SCARA printers.
-			if (   reprap.GetMove().GetKinematics().LimitPosition(m.coords, nullptr, numVisibleAxes, axesVirtuallyHomed, true, limitAxes) != LimitPositionResult::ok
+			// Continuous shortest-path rotary axes drift past +/-180 by design, so don't let M208 clamp them here either
+			// (matching the exemption in DoStraightMove); a clamp would silently abort the rest of a segmented move.
+			const Kinematics& segKin = reprap.GetMove().GetKinematics();
+			if (   segKin.LimitPosition(m.coords, nullptr, numVisibleAxes, axesVirtuallyHomed & ~segKin.GetShortestPathRotaryAxes(), true, limitAxes) != LimitPositionResult::ok
 #if SUPPORT_ASYNC_MOVES
 				|| !collisionChecker.UpdatePositions(m.coords, axesHomed)
 #endif
