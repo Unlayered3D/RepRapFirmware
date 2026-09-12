@@ -5,7 +5,10 @@ files it touches and why, and design notes that would otherwise be lost.
 
 - Upstream: `https://github.com/Duet3D/RepRapFirmware` (remote `upstream`)
 - Fork: `https://github.com/Unlayered3D/RepRapFirmware` (remote `origin`)
-- Working branch: `print-logging-fix`, forked from upstream at `ed7e034c7` (3.7.0-beta.1)
+- Working branch: `main` (the default), forked from upstream at `ed7e034c7` (3.7.0-beta.1).
+  Renamed from `print-logging-fix` on 2026-09-12 — it had accumulated all of the fork work while
+  the repository default was still the stale `3.6-dev`, so the public face of the repo was 3.6
+  code. `3.6-known-good` is the 3.6-era rollback point, kept as a named marker only.
 
 ## Features
 
