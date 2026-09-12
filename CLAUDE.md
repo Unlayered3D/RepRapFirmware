@@ -89,6 +89,9 @@ response with `rr_reply`.
 |---|---|
 | `G33` | Run `calibrate.g`, the machine calibration macro. Same locking as `G32` |
 | `M1750` | MMU2S control — see the fork doc for all subcommands |
+| `M1760 P"name" S<size> C<crc>` | Panel announces a file it will stream into `0:/gcodes/panel/`; created at full size. Aux port only |
+| `M1761 O<off> L<len> C<crc>` | One chunk of it — exactly `len` raw bytes follow the line. Replies `{"pfile":{"ack":…}}`; see `Developer-documentation/panel-file-stream.md` |
+| `M1762 S1 \| S0 \| (bare)` | Finish + whole-file CRC / abort + delete / report the stream |
 | `M201.2 P<motor> S<mm/s^2>` | Per-motor maximum acceleration |
 | `M203.2 P<motor> S<mm/min>` | Per-motor maximum feedrate |
 | `M205.2 P<motor> S<mm/s>` | Per-motor maximum jerk |

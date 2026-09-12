@@ -127,7 +127,9 @@ private:
 
 #endif
 
-enum class GCodeInputReadResult : uint8_t { haveData, noData, error };
+// 'waiting' is Unlayered: the file is still being written (a panel stream) and the next bytes are not on the card yet.
+// It is only ever returned when the caller passed a read limit.
+enum class GCodeInputReadResult : uint8_t { haveData, noData, error, waiting };
 
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 
@@ -143,7 +145,9 @@ public:
 	void Reset(const FileData &file) noexcept;						// Clears the buffer of a specific file. Should be called when it is closed or re-opened outside the reading context
 	size_t FileBytesCached(const FileData &file) const noexcept;	// How many bytes have been cached for the given file?
 
-	GCodeInputReadResult ReadFromFile(FileData &file) noexcept;		// Read another chunk of G-codes from the file and return true if more data is available
+	// Read another chunk of G-codes from the file. 'maxBytes' (Unlayered) caps how much may be read this time because
+	// the file is still arriving; SIZE_MAX means no cap, and the result is then never 'waiting'.
+	GCodeInputReadResult ReadFromFile(FileData &file, size_t maxBytes = SIZE_MAX) noexcept;
 
 private:
 	FileData lastFileRead;

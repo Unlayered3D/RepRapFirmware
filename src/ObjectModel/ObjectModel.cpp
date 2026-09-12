@@ -1116,7 +1116,7 @@ void ObjectModel::ReportObjectModelArrayAsJson(OutputBuffer *buf, ObjectExplorat
 		// Support retrieving just part of the array in case it is too large to write all of it to the buffer
 		if (i != startElement)
 		{
-			if (isRootArray && buf->Length() >= (OUTPUT_BUFFER_SIZE * (OUTPUT_BUFFER_COUNT - RESERVED_OUTPUT_BUFFERS))/2)
+			if (isRootArray && buf->Length() >= MaxObjectModelArrayResponseLength)
 			{
 				// We've used half the buffer space already, so stop reporting
 				context.SetNextElement(i);
@@ -1152,7 +1152,7 @@ void ObjectModel::ReportHeapArrayAsJson(OutputBuffer *buf, ObjectExplorationCont
 		// Support retrieving just part of the array in case it is too large to write all of it to the buffer
 		if (i != startElement)
 		{
-			if (isRootArray && buf->Length() >= (OUTPUT_BUFFER_SIZE * (OUTPUT_BUFFER_COUNT - RESERVED_OUTPUT_BUFFERS))/2)
+			if (isRootArray && buf->Length() >= MaxObjectModelArrayResponseLength)
 			{
 				// We've used half the buffer space already, so stop reporting
 				context.SetNextElement(i);

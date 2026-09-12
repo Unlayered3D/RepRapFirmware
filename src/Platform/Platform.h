@@ -65,6 +65,14 @@ class AsyncSerial;
 class PanelDueUpdater;
 #endif
 
+#if SUPPORT_PANEL_OTA
+class PanelOtaUpdater;
+#endif
+
+#if SUPPORT_PANEL_PRINT
+class PanelPrintStream;
+#endif
+
 // Define the number of ADC filters and the indices of the extra ones
 // Note, the thermistor code assumes that the first N filters are used by the TEMP0 to TEMP(N-1) thermistor inputs, where N = NumThermistorInputs
 #if HAS_VREF_MONITOR
@@ -311,6 +319,7 @@ public:
 	void DisconnectUsb() noexcept;							// Disconnect the USB device from the host, ending all CDC interfaces
 	void AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb, OutputBuffer *buf, bool rawMessage) noexcept;
 	void AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb, const char *_ecv_array msg, bool rawMessage) noexcept;
+	bool IsAuxOutputPending(size_t auxNumber) const noexcept;			// Unlayered3D: is there unsent output queued for this aux device?
 
 	void ResetChannel(size_t chan) noexcept;						// Re-initialise a serial channel
 	bool IsChanEnabled(size_t chan) const noexcept;					// Any device on the serial line?
@@ -323,6 +332,16 @@ public:
 #if SUPPORT_PANELDUE_FLASH
 	PanelDueUpdater *_ecv_null GetPanelDueUpdater() noexcept { return panelDueUpdater; }
 	void InitPanelDueUpdater() noexcept;
+#endif
+
+#if SUPPORT_PANEL_OTA
+	PanelOtaUpdater *_ecv_null GetPanelOtaUpdater() noexcept { return panelOtaUpdater; }
+	void InitPanelOtaUpdater() noexcept;
+#endif
+
+#if SUPPORT_PANEL_PRINT
+	PanelPrintStream *_ecv_null GetPanelPrintStream() noexcept { return panelPrintStream; }
+	void InitPanelPrintStream() noexcept;
 #endif
 
 	void SetIPAddress(IPAddress ip) noexcept;
@@ -637,6 +656,12 @@ private:
 #endif
 #if SUPPORT_PANELDUE_FLASH
 	PanelDueUpdater *_ecv_null panelDueUpdater = nullptr;
+#endif
+#if SUPPORT_PANEL_OTA
+	PanelOtaUpdater *_ecv_null panelOtaUpdater = nullptr;
+#endif
+#if SUPPORT_PANEL_PRINT
+	PanelPrintStream *_ecv_null panelPrintStream = nullptr;		// created on the first M1760, never freed
 #endif
 
 	// Files

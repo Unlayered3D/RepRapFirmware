@@ -22,6 +22,9 @@ namespace FirmwareUpdater
 #if NUM_ASYNC_CHANNELS != 0
 		PanelDueFirmwareModule = 4,
 #endif
+#if SUPPORT_PANEL_OTA
+		PanelOtaFirmwareModule = 5,		// Unlayered3D: stream an image to an ESP32 panel on an aux port
+#endif
 		NumUpdateModules
 	};
 

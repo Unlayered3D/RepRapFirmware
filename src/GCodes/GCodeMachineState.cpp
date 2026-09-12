@@ -270,8 +270,20 @@ void GCodeMachineState::WaitForAcknowledgement(uint32_t seq) noexcept
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 	if (fileState.IsLive())
 	{
-		// Stop reading from the current file
-		CloseFile();
+		// Stop reading from the current file.
+		//
+		// NOT CloseFile(). Since commit d232aa0b3 ("Record current filename in MachineState")
+		// CloseFile() walks the chain and closes the handle in EVERY parent state sharing this
+		// FileData. A blocking M291 arrives here via Push(gb, true) in GCodes7.cpp, and
+		// "withinSameFile" means the parent shares exactly this handle - so CloseFile() shuts
+		// the file the macro is going to be resumed into. PopState() reopens nothing and there
+		// is no reopen path anywhere, so after M292 the channel sits on a closed file: dialog
+		// dismissed, macro never released, stack never unwound, board needs M999. That broke
+		// every interactive macro on 3.7 - see the warning in the header of sys/load.g.
+		//
+		// Closing only this state's copy is what the code did before that commit, and it is all
+		// this path needs: the pushed state is discarded by PopState anyway.
+		fileState.Close();
 	}
 #endif
 	waitingForAcknowledgement = true;

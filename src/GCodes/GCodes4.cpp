@@ -26,6 +26,10 @@
 # include <Comms/PanelDueUpdater.h>
 #endif
 
+#if SUPPORT_PANEL_OTA
+# include <Comms/PanelOtaUpdater.h>
+#endif
+
 #if SUPPORT_MMU2S
 # include <Comms/MMU2S/MMU2S.h>
 #endif
@@ -789,6 +793,12 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 # if SUPPORT_PANELDUE_FLASH
 					FirmwareUpdater::UpdateModule(module, serialChannelForPanelDueFlashing, filenameString.GetRef());
 					isFlashingPanelDue = (module == (unsigned int)FirmwareUpdater::PanelDueFirmwareModule);
+#  if SUPPORT_PANEL_OTA
+					isPushingPanelOta = (module == (unsigned int)FirmwareUpdater::PanelOtaFirmwareModule);
+#  endif
+# elif SUPPORT_PANEL_OTA
+					FirmwareUpdater::UpdateModule(module, serialChannelForPanelDueFlashing, filenameString.GetRef());
+					isPushingPanelOta = (module == (unsigned int)FirmwareUpdater::PanelOtaFirmwareModule);
 # else
 					FirmwareUpdater::UpdateModule(module, 0, filenameString.GetRef());
 # endif
@@ -801,17 +811,32 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 # if SUPPORT_PANELDUE_FLASH
 				isFlashingPanelDue = false;
 # endif
+# if SUPPORT_PANEL_OTA
+				isPushingPanelOta = false;
+# endif
 				gb.SetState(GCodeState::flashing2);
 			}
 		}
-# if SUPPORT_PANELDUE_FLASH
+# if SUPPORT_PANELDUE_FLASH || SUPPORT_PANEL_OTA
 		else
 		{
+			// FirmwareUpdater::IsReady() is false, so exactly one of these is mid-flight and the
+			// other's pointer is null. Both are driven from here rather than from Platform::Spin
+			// because this state is the only place that knows the flash still owns the port.
+#  if SUPPORT_PANELDUE_FLASH
 			PanelDueUpdater *_ecv_null const panelDueUpdater = platform.GetPanelDueUpdater();
 			if (panelDueUpdater != nullptr)
 			{
 				panelDueUpdater->Spin();
 			}
+#  endif
+#  if SUPPORT_PANEL_OTA
+			PanelOtaUpdater *_ecv_null const panelOtaUpdater = platform.GetPanelOtaUpdater();
+			if (panelOtaUpdater != nullptr)
+			{
+				panelOtaUpdater->Spin();
+			}
+#  endif
 		}
 # endif
 #else

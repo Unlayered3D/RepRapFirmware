@@ -22,6 +22,10 @@
 # include <Comms/PanelDueUpdater.h>
 #endif
 
+#if SUPPORT_PANEL_OTA
+# include <Comms/PanelOtaUpdater.h>
+#endif
+
 namespace FirmwareUpdater
 {
 	// Check that the prerequisites are satisfied.
@@ -70,6 +74,26 @@ namespace FirmwareUpdater
 			}
 		}
 #endif
+#if SUPPORT_PANEL_OTA && (HAS_MASS_STORAGE || HAS_EMBEDDED_FILES)
+		if (moduleMap.IsBitSet(PanelOtaFirmwareModule))
+		{
+			// Same two prerequisites as the PanelDue module, and for the same reasons: raw mode
+			// would put a Marlin-compatible GCode host on the other end rather than our panel,
+			// and there is no point streaming a firmware image at a channel nobody is reading.
+			if (!reprap.GetPlatform().IsChanEnabled(serialChannel) || reprap.GetPlatform().IsChanRaw(serialChannel))
+			{
+				reply.printf("Aux port %d is not enabled or not in PanelDue mode", serialChannel-1);
+				return GCodeResult::error;
+			}
+			String<MaxFilenameLength> location;
+			if (!MassStorage::CombineName(location.GetRef(), FIRMWARE_DIRECTORY, filenameRef.IsEmpty() ? PANEL_OTA_FIRMWARE_FILE : filenameRef.c_str())
+					|| !MassStorage::FileExists(location.c_str()))
+			{
+				reply.printf("File %s not found", location.c_str());
+				return GCodeResult::error;
+			}
+		}
+#endif
 		return GCodeResult::ok;
 	}
 
@@ -89,12 +113,19 @@ namespace FirmwareUpdater
 			return false;
 		}
 #endif
+#if SUPPORT_PANEL_OTA
+		PanelOtaUpdater *_ecv_null const panelOtaUpdater = reprap.GetPlatform().GetPanelOtaUpdater();
+		if (panelOtaUpdater != nullptr && !panelOtaUpdater->Idle())
+		{
+			return false;
+		}
+#endif
 		return true;
 	}
 
 	void UpdateModule(unsigned int module, const size_t serialChannel, const StringRef& filenameRef) noexcept
 	{
-#if (HAS_WIFI_NETWORKING || SUPPORT_PANELDUE_FLASH) && (HAS_MASS_STORAGE || HAS_EMBEDDED_FILES)
+#if (HAS_WIFI_NETWORKING || SUPPORT_PANELDUE_FLASH || SUPPORT_PANEL_OTA) && (HAS_MASS_STORAGE || HAS_EMBEDDED_FILES)
 		switch(module)
 		{
 # if HAS_WIFI_NETWORKING
@@ -122,7 +153,22 @@ namespace FirmwareUpdater
 				}
 				platform.GetPanelDueUpdater()->Start(filenameRef, serialChannel);
 			}
+			break;
 # endif
+# if SUPPORT_PANEL_OTA
+		case PanelOtaFirmwareModule:
+			{
+				Platform& platform = reprap.GetPlatform();
+				if (platform.GetPanelOtaUpdater() == nullptr)
+				{
+					platform.InitPanelOtaUpdater();
+				}
+				platform.GetPanelOtaUpdater()->Start(filenameRef, serialChannel);
+			}
+			break;
+# endif
+		default:
+			break;
 		}
 #endif
 	}

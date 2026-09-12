@@ -17,6 +17,10 @@
 #include <ObjectModel/GlobalVariables.h>
 #include <GCodes/GCodeBuffer/ExpressionParser.h>
 
+#if SUPPORT_PANEL_PRINT
+# include <Comms/PanelPrintStream.h>
+#endif
+
 constexpr FileInfoParser::ParseTableEntry FileInfoParser::parseTable[] =
 {
 	// Table of comments parsed, in alphabetical order.
@@ -265,12 +269,15 @@ GCodeResult FileInfoParser::GetFileInfo(const char *_ecv_array filePath, GCodeFi
 											(double)((float)prepTime/1000.0), (double)((float)accumulatedReadTime/1000.0), (double)((float)accumulatedParseTime/1000.0), (double)((float)accumulatedSeekTime/1000.0));
 					}
 					parseState = FileParseState::notParsing;
+					// Unlayered: a file still streaming in from the panel was parsed only as far as it had arrived, so the
+					// result stays flagged incomplete; PrintMonitor asks again when the stream completes.
+					const bool truncated = (ReadableLength() < fileBeingParsed->Length());
 					fileBeingParsed->Close();
 					if (parsedFileInfo.numLayers == 0 && parsedFileInfo.layerHeight > 0.0 && parsedFileInfo.objectHeight > 0.0)
 					{
 						parsedFileInfo.numLayers = lrintf(parsedFileInfo.objectHeight / parsedFileInfo.layerHeight);
 					}
-					parsedFileInfo.incomplete = false;
+					parsedFileInfo.incomplete = truncated;
 					info = parsedFileInfo;
 					return GCodeResult::ok;
 				}
@@ -307,7 +314,7 @@ bool FileInfoParser::ReadAndProcessFileChunk(bool isParsingHeader, bool& reached
 	// Read a chunk of the file into the buffer after the data we have already.
 	// For efficiency, read complete 512byte sectors on 512byte sector boundaries, and read them into 32-bit aligned memory - that allows the SD card driver to DMA directly into the buffer.
 	bufferStartFilePosition = fileBeingParsed->Position() - GCodeOverlapSize;					// we need to keep this up to date so that we can record the file offsets of thumbnails
-	const FilePosition sizeLeft = fileBeingParsed->Length() - fileBeingParsed->Position();
+	const FilePosition sizeLeft = ReadableLength() - fileBeingParsed->Position();
 	const size_t sizeToRead = (size_t)min<FilePosition>(sizeLeft, GCodeReadSize);
 
 	const uint32_t now1 = millis();
@@ -528,10 +535,24 @@ const char *_ecv_array FileInfoParser::ScanBuffer(const char *_ecv_array pStart,
 
 // Find the starting position of the file end comments, get the object height, set up the buffer ready to parse them.
 // Return true if successful.
+// How much of the file may be read. Normally its length; for a file that the panel is still streaming into the
+// cache, only what has been committed so far - the pre-sized remainder holds whatever those sectors held before.
+FilePosition FileInfoParser::ReadableLength() const noexcept
+{
+#if SUPPORT_PANEL_PRINT
+	PanelPrintStream *_ecv_null const pps = reprap.GetPlatform().GetPanelPrintStream();
+	if (pps != nullptr && pps->IsStreamingFile(filenameBeingParsed.c_str()))
+	{
+		return min<FilePosition>(fileBeingParsed->Length(), pps->CommittedLength());
+	}
+#endif
+	return fileBeingParsed->Length();
+}
+
 bool FileInfoParser::FindEndComments() noexcept
 {
 	// Temporary code until we find something better
-	const FilePosition roundedDownLength = fileBeingParsed->Length() & ~(GCodeReadSize - 1);		// round file length down to a multiple of the read size
+	const FilePosition roundedDownLength = ReadableLength() & ~(GCodeReadSize - 1);		// round file length down to a multiple of the read size
 	FilePosition pos;
 	if (roundedDownLength > parsedFileInfo.headerSize + GCodeFooterSize)
 	{

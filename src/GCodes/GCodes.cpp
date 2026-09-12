@@ -54,6 +54,10 @@
 # include <Comms/MMU2S/MMU2S.h>
 #endif
 
+#if SUPPORT_PANEL_PRINT
+# include <Comms/PanelPrintStream.h>
+#endif
+
 constexpr const char *_ecv_array TargetUnreachableText = "target position outside machine limits";		// message used for both G0/1 and G2/3 moves
 
 #if NUM_ASYNC_CHANNELS != 0
@@ -78,6 +82,9 @@ GCodes::GCodes(Platform& p) noexcept :
 	isFlashing(false),
 #if SUPPORT_PANELDUE_FLASH
 	isFlashingPanelDue(false),
+#endif
+#if SUPPORT_PANEL_OTA
+	isPushingPanelOta(false),
 #endif
 	lastWarningMillis(0)
 #if HAS_MASS_STORAGE
@@ -302,6 +309,9 @@ void GCodes::Reset() noexcept
 #if SUPPORT_PANELDUE_FLASH
 	isFlashingPanelDue = false;
 #endif
+#if SUPPORT_PANEL_OTA
+	isPushingPanelOta = false;
+#endif
 	currentZProbeNumber = 0;
 
 	buildObjects.Init();
@@ -486,7 +496,7 @@ void GCodes::Spin() noexcept
 		{
 			nextGcodeSource = 0;
 		}
-		if (gbp != nullptr && (gbp != AuxGCode() || !IsFlashingPanelDue()))	// skip auxGCode while flashing PanelDue is in progress
+		if (gbp != nullptr && (gbp != AuxGCode() || !IsFlashingAuxDevice()))	// skip auxGCode while a flash owns the aux port
 		{
 			if (SpinGCodeBuffer(*gbp))										// if we did something useful
 			{
@@ -758,8 +768,28 @@ bool GCodes::DoFilePrint(GCodeBuffer& gb, const StringRef& reply) noexcept
 		FileData& fd = gb.LatestMachineState().fileState;
 
 		// Do we have more data to process?
-		switch (gb.GetFileInput()->ReadFromFile(fd))
+#if SUPPORT_PANEL_PRINT
+		// Unlayered: a job file still arriving from the panel is read only as far as it has been committed to the
+		// card. The macros a job runs are ordinary complete files and are not held back.
+		size_t maxBytes = SIZE_MAX;
 		{
+			PanelPrintStream *_ecv_null const pps = platform.GetPanelPrintStream();
+			if (pps != nullptr && pps->IsGatingPrint() && &gb == FileGCode() && !gb.IsDoingFileMacro())
+			{
+				maxBytes = pps->ReadableFrom(fd.GetPosition());
+			}
+		}
+		switch (gb.GetFileInput()->ReadFromFile(fd, maxBytes))
+#else
+		switch (gb.GetFileInput()->ReadFromFile(fd))
+#endif
+		{
+#if SUPPORT_PANEL_PRINT
+		case GCodeInputReadResult::waiting:
+			// The panel has not sent this part of the file yet. Not the end of the file - nothing to do this time round.
+			return false;
+#endif
+
 		case GCodeInputReadResult::haveData:
 			if (gb.GetFileInput()->FillBuffer(&gb))
 			{
@@ -3827,6 +3857,16 @@ void GCodes::StartPrinting(bool fromStart) noexcept
 
 	reprap.GetPrintMonitor().StartedPrint();
 	const char *_ecv_array _ecv_null const printingFilename = reprap.GetPrintMonitor().GetPrintingFilename();
+#if SUPPORT_PANEL_PRINT
+	{
+		// Unlayered: if this is the cache the panel is still filling, hold the job reader at its frontier
+		PanelPrintStream *_ecv_null const pps = platform.GetPanelPrintStream();
+		if (pps != nullptr)
+		{
+			pps->PrintStarting(printingFilename);
+		}
+	}
+#endif
 	FileGCode()->StartNewFile(printingFilename);
 	platform.MessageF(LogWarn, (IsSimulating()) ? "Started simulating printing file %s\n" : "Started printing file %s\n", printingFilename);
 	if (fromStart)
@@ -4695,6 +4735,17 @@ void GCodes::StopPrint(GCodeBuffer *_ecv_null gbp, StopPrintReason reason) noexc
 	deferredPauseCommandPending = nullptr;
 	pauseState = PauseState::notPaused;
 
+#if SUPPORT_PANEL_PRINT
+	{
+		// Unlayered: the job is over however it ended, so the panel's cache (if that is what it was) is no longer gated
+		PanelPrintStream *_ecv_null const pps = platform.GetPanelPrintStream();
+		if (pps != nullptr)
+		{
+			pps->PrintStopped();
+		}
+	}
+#endif
+
 #if HAS_SBC_INTERFACE || HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 	if (gbp != nullptr)
 	{
@@ -5279,6 +5330,14 @@ void GCodes::CheckReportDue(GCodeBuffer& gb, const StringRef& reply) const noexc
 			break;
 
 		case StatusReportType::m409:
+			// Unlayered3D: don't queue another full-model status report while the previous one is still
+			// draining. This report is the entire object model at depth 99; on a 57600-baud panel link it
+			// takes ~1s to send, so without this guard the reports pile up, pin the output buffer pool and
+			// starve the HTTP responder - which DWC sees as "Service Unavailable" and a dropped connection.
+			{
+				const int auxIndex = (&gb == AuxGCode()) ? 0 : (&gb == Aux2GCode()) ? 1 : -1;
+				if (auxIndex >= 0 && platform.IsAuxOutputPending((size_t)auxIndex)) { break; }
+			}
 			try
 			{
 				OutputBuffer *_ecv_null statusBuf;

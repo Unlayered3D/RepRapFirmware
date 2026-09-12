@@ -359,7 +359,7 @@ size_t FileGCodeInput::FileBytesCached(const FileData &file) const noexcept
 }
 
 // Read another chunk of G-codes from the file and return true if more data is available
-GCodeInputReadResult FileGCodeInput::ReadFromFile(FileData &file) noexcept
+GCodeInputReadResult FileGCodeInput::ReadFromFile(FileData &file, size_t maxBytes) noexcept
 {
 	size_t bytesCached = RegularGCodeInput::BytesCached();
 
@@ -391,7 +391,19 @@ GCodeInputReadResult FileGCodeInput::ReadFromFile(FileData &file) noexcept
 		// The code here used to read into a local buffer in blocks that are multiples of 4 bytes.
 		// However, unless we can use a buffer of at least 512 bytes then that is redundant,
 		// because the data will be copied via the sector buffer in FatFS anyway. So we don't do that any more.
-		const int bytesRead = file.Read(buffer + writingPointer, min<size_t>(BufferSpaceLeft(), GCodeInputBufferSize - writingPointer));
+		size_t bytesToRead = min<size_t>(BufferSpaceLeft(), GCodeInputBufferSize - writingPointer);
+		if (maxBytes < bytesToRead)
+		{
+			// Unlayered: the caller is holding data back because the file is still arriving and only this much of it is
+			// on the card. Reading past that would return whatever the sectors held before, so take what is allowed -
+			// and if that is nothing, say so rather than reporting end of file.
+			if (maxBytes == 0)
+			{
+				return (bytesCached > 0) ? GCodeInputReadResult::haveData : GCodeInputReadResult::waiting;
+			}
+			bytesToRead = maxBytes;
+		}
+		const int bytesRead = file.Read(buffer + writingPointer, bytesToRead);
 		if (bytesRead < 0)
 		{
 			return GCodeInputReadResult::error;

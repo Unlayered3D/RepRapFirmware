@@ -59,6 +59,9 @@ public:
 	void AppendAuxReply(const GCodeBuffer *_ecv_null gb, OutputBuffer *_ecv_null reply, bool rawMessage) noexcept;
 	bool Flush() noexcept;
 
+	// Unlayered3D: true if this device still has output queued that has not been sent yet
+	bool HasPendingOutput() const noexcept { return !outStack.IsEmpty(); }
+
 	void Diagnostics(const StringRef& reply, unsigned int index) noexcept;
 
 #if SUPPORT_MODBUS_RTU

@@ -105,6 +105,88 @@ gates the curvature path until it has run.
 Also fixed here: `GridDefinition::CheckValidity` now requires at least 2 points on each axis.
 With one, the interpolation code computes a negative grid index and reads out of bounds.
 
+### 6. Panel firmware push — `M997 S5`
+
+`src/Comms/PanelOtaUpdater.{h,cpp}`, guarded by `SUPPORT_PANEL_OTA` — defaulted to 0 in
+`src/Config/Pins.h` and enabled in `Pins_Duet3Mini.h`, since it is only useful where one of our
+panels is wired to aux0. Streams a firmware image from `0:/firmware/` out of an aux port to an
+Unlayered ESP32 panel, which writes it into whichever of its two OTA slots is not running.
+
+`M997 S5 P"unlayered-panel.bin"` (`P` optional, that name is the default). Requires the aux
+channel to be enabled and in PanelDue mode, exactly like `S4`.
+
+**The wire protocol is specified in [panel-firmware-push.md](panel-firmware-push.md) and the
+receiving end is in a different repository** (`C:\unlayered-panel-35`). That document is a
+contract between two codebases: a framing change made on one side alone breaks the other
+silently, part way through a two-minute transfer. Change the document first.
+
+Framing in one line: a JSON announce carrying size and whole-image CRC, then
+`{"fwData":{...}}` header lines each followed by exactly `len` raw bytes, each acknowledged by
+the panel before the next is sent. **The per-chunk ACK is flow control, not politeness** —
+there is no RTS/CTS, the panel's RX ring is 8 kB, and its flash writes stall its reader, so a
+free-running sender overruns it silently. CRC-32/ISO-HDLC throughout, via `Storage/CRC32.h` at
+this end; it already agrees with the panel's implementation because the existing `M559` upload
+path checks the panel's CRC with the same class.
+
+It reuses the `M997` scaffolding (`FirmwareUpdater`, the `flashing1` state, the heaters-off /
+drives-disabled posture) but shares **nothing** with `PanelDueUpdater`: no SAM-BA, no bossa, no
+baud-rate change. The PanelDue method cannot be copied — the ESP32's ROM loader is on UART0 and
+needs GPIO0 low at reset, while the link is UART1 — and it is worse anyway, because SAM-BA
+erases before it receives.
+
+Two things about `Spin()` that are easy to get wrong:
+
+- **It must not block.** `AsyncSerial::write()` spins until the whole block is buffered, so
+  every write is clamped to `canWrite()` first and the remainder waits for the next call.
+- **It disables the aux port's emergency-stop interrupt callback for the duration**, and that
+  is load-bearing rather than cosmetic: `GCodes::Spin()` drains the port outright when
+  `emergencyStopCommanded` is set, which would swallow the panel's acknowledgements and stall
+  the transfer on a timeout with no indication of where the bytes went.
+
+`IsFlashingPanelDue()` gained a sibling, `IsPushingPanelOta()`, and the three places that
+suppressed aux traffic during a PanelDue flash now ask `IsFlashingAuxDevice()` instead. Both
+mechanisms want the same two things — don't transmit on that port, don't parse what arrives on
+it as G-code — so the callers name the requirement rather than one of the implementations.
+
+### 7. Print from the panel's SD card — `M1760` / `M1761` / `M1762`
+
+`src/Comms/PanelPrintStream.{h,cpp}`, guarded by `SUPPORT_PANEL_PRINT` (defaulted 0 in `Pins.h`,
+on in `Pins_Duet3Mini.h`). The panel uploads a G-code file from its own microSD over the aux
+UART into a cache at `0:/gcodes/panel/<name>`, and RRF prints **that file while it is still
+arriving**. The print is an ordinary SD print — pause/resume, progress, `M0`, DWC's job card,
+resurrect all behave — because the only thing asked of the rest of RRF is *do not read past the
+point the upload has reached*.
+
+**The wire protocol is specified in [panel-file-stream.md](panel-file-stream.md); the sender is in
+`C:\unlayered-panel`.** Same rule as the firmware push: change the document first.
+
+How the "still arriving" part is made safe, in three clamps:
+
+- `M1760` creates the file **at its final size** (`f_expand`, or a seek-extend on a fragmented
+  card), so `Length()`, `job.file.size` and the progress fraction are right from byte 0. The
+  unwritten part holds whatever those sectors held before, hence:
+- **The job reader is clamped.** `GCodes::DoFilePrint` asks `PanelPrintStream::ReadableFrom()`
+  and passes a byte cap to `FileGCodeInput::ReadFromFile()`, which grew a `maxBytes` parameter and
+  a fourth result, `waiting`, so that "not on the card yet" is not mistaken for end of file.
+  Macros the job runs are not gated (`!gb.IsDoingFileMacro()`).
+- **The metadata parser is clamped.** `FileInfoParser::ReadableLength()` replaces `Length()` in
+  the two places that decide how far to read, the result stays `incomplete` when it was cut short,
+  and `PrintMonitor::ReparseFileInfo()` runs the parse again once the last chunk lands. That is
+  what lets the print start ten seconds in rather than after the footer: OrcaSlicer's header block
+  already carries time, layers, filament and height, and the rest arrives with the footer.
+
+`M36.1` is deliberately **not** clamped — the panel reads thumbnails from its own copy of the file.
+
+The chunk body is read from the port **by the `M1761` handler itself**, which returns
+`notFinished` until all `L` bytes are in. While a command is executing its `GCodeBuffer` is not
+refilled, so no body byte ever reaches the parser — no aux-channel gate of the kind the firmware
+push needs. The writer is opened in **append mode**, deliberately: write mode would hold the
+board's only `FileWriteBuffer` for hours, starving `resurrect.g`, the log and DWC uploads.
+`Serial0Params.numRxSlots` went 512 → 2048 so a whole body fits in the ring while the main loop
+is busy syncing the previous one; the per-chunk ACK is the only flow control. FatFs' tiny mode
+(one sector window per volume) is what makes a reader see the writer's synced sectors without
+stale per-file buffers.
+
 ## Build system
 
 Makefiles are the source of truth. `.cproject`/`.project`/`.settings` are still tracked for
@@ -126,8 +208,8 @@ misdiagnose. Collect with a plain `find` and filter with `$(foreach)`/`$(findstr
 
 ## Upstream merge surface
 
-44 files under `src/` differ from upstream, excluding the vendored `MQTT_C` and `Lwip` trees:
-**7 new fork-owned files** plus **37 modified upstream files**. Only the latter 37 can conflict,
+49 files under `src/` differ from upstream, excluding the vendored `MQTT_C` and `Lwip` trees:
+**9 new fork-owned files** plus **40 modified upstream files**. Only the latter 40 can conflict,
 and keeping that number down is what makes merging from `upstream/3.7-dev` tractable.
 
 Regenerate these counts with:
@@ -139,9 +221,10 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
     ':!src/Networking/MQTT/MQTT_C' ':!src/Networking/LwipEthernet/Lwip'   # modified files
 ```
 
-**Fork-owned new files** (7) — no conflict risk:
+**Fork-owned new files** (11) — no conflict risk:
 `Comms/MMU2S/{MMU2S.h,MMU2S.cpp,MMU2SProtocol.h}` ·
-`Movement/Kinematics/FiveAxisKinematics.{h,cpp}` · `Platform/PrinterStatistics.{h,cpp}`
+`Movement/Kinematics/FiveAxisKinematics.{h,cpp}` · `Platform/PrinterStatistics.{h,cpp}` ·
+`Comms/PanelOtaUpdater.{h,cpp}` · `Comms/PanelPrintStream.{h,cpp}`
 
 **Upstream files touched, and why:**
 
@@ -156,7 +239,9 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
 | Statistics host | `Platform/RepRap.{h,cpp}` | Owns `PrinterStatistics`; calls `Spin`/`Init`/`Report` |
 | Heater PID | `Heating/{FOPDT.h,FOPDT.cpp,Heat.h,Heat.cpp,Heater.h}` | `M301`/`M304` PID override support |
 | Input shaping | `Movement/AxisShaper.{h,cpp}` | Three negative shapers (`nzvum`, `nzvdum`, `neium`) |
-| Serial | `Comms/AuxDevice.{h,cpp}`, `CAN/CanInterface.cpp` | MMU2S UART mode |
+| Serial | `Comms/AuxDevice.{h,cpp}`, `CAN/CanInterface.cpp` | MMU2S UART mode, half-duplex, raw-mode Marlin ACKs |
+| Panel push | `Comms/FirmwareUpdater.{h,cpp}`, `Platform/Platform.{h,cpp}`, `GCodes/GCodes.{h,cpp}`, `GCodes4.cpp`, `Config/{Pins.h,Pins_Duet3Mini.h,Configuration.h}` | `M997 S5` module, `PanelOtaUpdater` ownership, `IsFlashingAuxDevice()` |
+| Panel print | `GCodes/GCodeInput.{h,cpp}`, `GCodes/GCodes.{h,cpp}`, `GCodes2.cpp`, `Storage/FileInfoParser.{h,cpp}`, `PrintMonitor/PrintMonitor.{h,cpp}`, `Platform/Platform.{h,cpp}`, `Config/{Pins.h,Pins_Duet3Mini.h}` | `M1760–M1762` dispatch, `ReadFromFile(maxBytes)` + `waiting`, `ReadableLength()`, `ReparseFileInfo()`, `PanelPrintStream` ownership, 2 kB aux0 RX ring |
 | Probing | `GCodes/StraightProbeSettings.h` | Probing changes for the five-axis machines |
 | Identity | `Version.h` | `+unlayered.1` suffix so local builds are identifiable |
 | Misc | `RepRapFirmware.h` | Forward declarations |

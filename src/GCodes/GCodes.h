@@ -154,6 +154,18 @@ public:
 		{ return false; }
 #endif
 
+	bool IsPushingPanelOta() const noexcept
+#if SUPPORT_PANEL_OTA
+		{ return isPushingPanelOta; }
+#else
+		{ return false; }
+#endif
+
+	// True while a firmware flash owns an aux port. Both mechanisms need the same two things
+	// from the rest of RRF for the duration - don't transmit on that port, and don't parse what
+	// arrives on it as GCode - so the callers ask this rather than naming one of them.
+	bool IsFlashingAuxDevice() const noexcept { return IsFlashingPanelDue() || IsPushingPanelOta(); }
+
 	bool IsReallyPrinting() const noexcept;										// Return true if we are printing from SD card and not pausing, paused or resuming
 	bool IsReallyPrintingOrResuming() const noexcept;
 	bool IsCancellingPrint() const noexcept;
@@ -487,6 +499,9 @@ private:
 #if SUPPORT_MMU2S
 	GCodeResult HandleMMU2SDirectCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// M1750 handler
 #endif
+#if SUPPORT_PANEL_PRINT
+	GCodeResult HandlePanelPrintCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// M1760-M1762 handler
+#endif
 	bool ChangeMicrostepping(size_t axisOrExtruder, unsigned int microsteps, bool interp, const StringRef& reply) const noexcept; // Change microstepping on the specified drive
 	void CheckTriggers() noexcept;															// Check for and execute triggers
 	void DoEmergencyStop() noexcept;														// Execute an emergency stop
@@ -753,6 +768,9 @@ private:
 	bool isFlashing;							// Is a new firmware binary going to be flashed?
 #if SUPPORT_PANELDUE_FLASH
 	bool isFlashingPanelDue;					// Are we in the process of flashing PanelDue?
+#endif
+#if SUPPORT_PANEL_OTA
+	bool isPushingPanelOta;						// Are we streaming a firmware image to an Unlayered panel?
 #endif
 
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES

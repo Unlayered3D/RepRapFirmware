@@ -342,6 +342,19 @@ void PrintMonitor::StartingPrint(const char *_ecv_array filename) noexcept
 #endif
 }
 
+// Unlayered: the file being printed was still arriving from the panel when it was parsed, so the parse stopped at
+// its frontier (the footer fields, the rest of the thumbnails). Now that it is whole, have Spin() parse it again.
+void PrintMonitor::ReparseFileInfo() noexcept
+{
+#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
+	WriteLocker locker(printMonitorLock);
+	if (!filenameBeingPrinted.IsEmpty())
+	{
+		printingFileParsed = false;
+	}
+#endif
+}
+
 // Tell this class that the file set for printing is now actually processed
 void PrintMonitor::StartedPrint() noexcept
 {

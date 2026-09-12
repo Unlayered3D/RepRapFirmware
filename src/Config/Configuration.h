@@ -92,6 +92,9 @@ constexpr unsigned int MaxMessageBoxes = 8;				// the maximum number of message 
 
 #define PANEL_DUE_FIRMWARE_FILE "PanelDueFirmware.bin"
 
+// Unlayered3D: default image for M997 S5, the ESP32 panel firmware push
+#define PANEL_OTA_FIRMWARE_FILE "unlayered-panel.bin"
+
 // Conditional GCode support
 constexpr unsigned int MaxBlockIndent = 10;				// maximum indentation of GCode. Each level of indentation introduces a new block.
 
@@ -182,14 +185,22 @@ constexpr size_t ShortGCodeLength = 64;
 // for the HTTP responder to return a status response. Otherwise DWC never gets to know that it needs to make a rr_reply call and the system deadlocks.
 #if SAME70 || SAME5x
 constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
-constexpr size_t OUTPUT_BUFFER_COUNT = 40;				// How many OutputBuffer instances do we have?
+// Unlayered3D: was 40. A PanelDue-mode OM push can hold ~20 buffers for a second or more while it drains
+// over the 57600-baud aux link, which left fewer than MinimumBuffersForObjectModel free and made rr_model
+// return 501 (see HttpResponder.cpp) - i.e. DWC repeatedly losing the connection during prints/macros.
+constexpr size_t OUTPUT_BUFFER_COUNT = 64;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 4;			// Number of reserved output buffers after long responses, enough to hold a status response
 constexpr size_t MinimumBuffersForObjectModel = 20;		// Minimum number of free buffers we want before we start assembling a request for the object model
+// Unlayered3D: budget for a single root-array object-model response. Upstream derived this from
+// OUTPUT_BUFFER_COUNT (half the pool), so raising the pool also licensed proportionally bigger
+// responses and bought no headroom at all. Pinned to the value the stock 40-buffer build used.
+constexpr size_t MaxObjectModelArrayResponseLength = 4608;	// = (256 * (40 - 4)) / 2
 #elif SAM4E || SAM4S
 constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
 constexpr size_t OUTPUT_BUFFER_COUNT = 26;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 2;			// Number of reserved output buffers after long responses, enough to hold a status response
 constexpr size_t MinimumBuffersForObjectModel = 20;		// Minimum number of free buffers we want before we start assembling a request for the object model
+constexpr size_t MaxObjectModelArrayResponseLength = 3072;	// = (256 * (26 - 2)) / 2, i.e. unchanged from stock on these boards
 #else
 # error Unsupported processor
 #endif

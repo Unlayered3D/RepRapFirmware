@@ -60,6 +60,10 @@
 # include <Comms/MMU2S/MMU2S.h>
 #endif
 
+#if SUPPORT_PANEL_PRINT
+# include <Comms/PanelPrintStream.h>
+#endif
+
 #ifdef DUET3_ATE
 # include <Duet3Ate.h>
 #endif
@@ -4828,6 +4832,14 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 #endif
 
+#if SUPPORT_PANEL_PRINT
+			case 1760:	// Unlayered: the panel announces a file it is about to stream into the cache
+			case 1761:	// Unlayered: one chunk of that file follows this line as raw bytes
+			case 1762:	// Unlayered: finish, abort or report the stream
+				result = HandlePanelPrintCommand(gb, reply);
+				break;
+#endif
+
 			default:
 #if HAS_SBC_INTERFACE
 				// Send unknown non-binary codes to DSF so potential plugins can interpret them
@@ -5116,6 +5128,50 @@ bool GCodes::HandleResult(GCodeBuffer& gb, GCodeResult rslt, const StringRef& re
 	}
 	return true;
 }
+
+#if SUPPORT_PANEL_PRINT
+
+// M1760 P"name" S<size> C<crc32>   the panel announces a file; it is created at 0:/gcodes/panel/<name> at its final size
+// M1761 O<offset> L<len> C<crc32>  a chunk header; exactly <len> raw bytes follow the line and are read straight off the port
+// M1762 S1 | S0 | (bare)           finish and verify the whole-file CRC | abort and delete the cache | report
+// Only from an aux port, because the chunk body is taken from that port and there is nowhere else it could come from.
+// Every reply is a JSON object with a single "pfile" key - see Developer-documentation/panel-file-stream.md.
+GCodeResult GCodes::HandlePanelPrintCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
+{
+	size_t auxNumber;
+	if (&gb == AuxGCode())
+	{
+		auxNumber = 0;
+	}
+# if NUM_ASYNC_CHANNELS > 1
+	else if (&gb == Aux2GCode())
+	{
+		auxNumber = 1;
+	}
+# endif
+	else
+	{
+		reply.copy("M1760-M1762 are only accepted from an aux port");
+		return GCodeResult::error;
+	}
+
+	if (platform.GetPanelPrintStream() == nullptr)
+	{
+		platform.InitPanelPrintStream();
+	}
+	PanelPrintStream& pps = *platform.GetPanelPrintStream();
+	switch (gb.GetCommandNumber())
+	{
+	case 1760:
+		return pps.Announce(gb, reply);
+	case 1761:
+		return pps.ReceiveChunk(gb, *platform.GetAsyncPort(auxNumber), reply);
+	default:
+		return pps.Finish(gb, reply);
+	}
+}
+
+#endif
 
 #if SUPPORT_MMU2S
 

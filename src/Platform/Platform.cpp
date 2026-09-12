@@ -55,6 +55,14 @@
 # include <Comms/PanelDueUpdater.h>
 #endif
 
+#if SUPPORT_PANEL_OTA
+# include <Comms/PanelOtaUpdater.h>
+#endif
+
+#if SUPPORT_PANEL_PRINT
+# include <Comms/PanelPrintStream.h>
+#endif
+
 #if SAM4E || SAM4S || SAME70
 # include <AnalogIn.h>
 # include <DmacManager.h>
@@ -705,8 +713,8 @@ void Platform::SendPanelDueMessage(size_t chan, const char *_ecv_array msg) noex
 		// TODO add PanelDue support via USB(2)
 		return;
 	}
-	// Don't send anything to PanelDue while we are flashing it
-	if (!reprap.GetGCodes().IsFlashingPanelDue())
+	// Don't send anything to the panel while we are flashing it
+	if (!reprap.GetGCodes().IsFlashingAuxDevice())
 	{
 		auxDevices[chan - FirstAuxChannel].SendPanelDueMessage(msg);
 	}
@@ -3120,13 +3128,45 @@ void Platform::InitPanelDueUpdater() noexcept
 }
 #endif
 
+#if SUPPORT_PANEL_OTA
+void Platform::InitPanelOtaUpdater() noexcept
+{
+	if (panelOtaUpdater == nullptr)
+	{
+		panelOtaUpdater = new PanelOtaUpdater();
+	}
+}
+#endif
+
+#if SUPPORT_PANEL_PRINT
+void Platform::InitPanelPrintStream() noexcept
+{
+	if (panelPrintStream == nullptr)
+	{
+		panelPrintStream = new PanelPrintStream();
+	}
+}
+#endif
+
+// Unlayered3D: report whether an aux device still has unsent output queued. Used to stop a new
+// unsolicited object-model status report being generated while the previous one is still draining.
+bool Platform::IsAuxOutputPending(size_t auxNumber) const noexcept
+{
+#if NUM_ASYNC_CHANNELS != 0
+	return auxNumber < ARRAY_SIZE(auxDevices) && auxDevices[auxNumber].HasPendingOutput();
+#else
+	(void)auxNumber;
+	return false;
+#endif
+}
+
 void Platform::AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb, const char *_ecv_array msg, bool rawMessage) noexcept
 {
 #if NUM_ASYNC_CHANNELS != 0
 	if (auxNumber < ARRAY_SIZE(auxDevices))
 	{
-		// Don't send anything to PanelDue while we are flashing it
-		if (auxNumber == 0 && reprap.GetGCodes().IsFlashingPanelDue())
+		// Don't send anything to the panel while we are flashing it
+		if (auxNumber == 0 && reprap.GetGCodes().IsFlashingAuxDevice())
 		{
 			return;
 		}
@@ -3140,8 +3180,8 @@ void Platform::AppendAuxReply(size_t auxNumber, const GCodeBuffer *_ecv_null gb,
 #if NUM_ASYNC_CHANNELS != 0
 	if (auxNumber < ARRAY_SIZE(auxDevices))
 	{
-		// Don't send anything to PanelDue while we are flashing it
-		if (auxNumber == 0 && reprap.GetGCodes().IsFlashingPanelDue())
+		// Don't send anything to the panel while we are flashing it
+		if (auxNumber == 0 && reprap.GetGCodes().IsFlashingAuxDevice())
 		{
 			OutputBuffer::ReleaseAll(reply);
 			return;

@@ -60,6 +60,8 @@ private:
 		pre(fileBeingParsed != nullptr);
 	bool FindEndComments() noexcept
 		pre(fileBeingParsed != nullptr);
+	FilePosition ReadableLength() const noexcept	// Unlayered: the file's length, or less if the panel is still streaming it in
+		pre(fileBeingParsed != nullptr);
 	const char *_ecv_array ScanBuffer(const char *_ecv_array pStart, const char *_ecv_array pEnd, bool isParsingHeader, bool& stopped) noexcept
 		pre(pStart.base == pEnd.base; pStart < pEnd; atLineStart)
 		post(_ecv_result.base == pStart.base; _ecv_result <= pEnd);

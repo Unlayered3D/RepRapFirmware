@@ -546,17 +546,15 @@ void AuxDevice::TxEndedCallback() noexcept
 	AuxDevice *const dev = (AuxDevice*)cp.vp;
 	if (dev->uart != nullptr)
 	{
-		uint32_t pending = dev->echoBytesPending;
-		while (pending != 0 && dev->uart->available() > 0)
-		{
-			(void)dev->uart->read();
-			--pending;
-		}
-		// Whatever could not be taken is abandoned rather than carried forward. A collision corrupts our own
-		// echo, so fewer bytes return than were sent; carrying the shortfall means the next transmission
-		// discards it out of the far end's data instead, which costs a line every few exchanges and gets
-		// worse the busier the wire is. Abandoning it leaves at most the tail of our own reply - and since
-		// replies end in a newline, what survives is an empty line, which the parser drops.
+		// Clear outright rather than counting bytes off. Both counting variants were tried and both leave
+		// fragments: a long reply goes out in several chunks and only the last ends in a newline, so any
+		// shortfall - whether carried forward or abandoned - strands mid-JSON text with no line terminator.
+		// That accumulates with whatever arrives next until it trips "GCode command too long" at column 256.
+		// The shortfall is unavoidable because our own echo can overrun the receive buffer while we transmit.
+		//
+		// Clearing loses nothing legitimate, given the far end holds off until the line has been quiet: on
+		// one conductor it cannot speak while we are speaking, and the panel's drain_tx() enforces the gap.
+		dev->uart->ClearReceiveBuffer();
 		dev->echoBytesPending = 0;
 	}
 }

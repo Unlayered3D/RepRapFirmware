@@ -43,6 +43,7 @@ public:
 	void StartingPrint(const char *_ecv_array filename) noexcept;	// Called to indicate a file will be printed (see M23)
 	void StartedPrint() noexcept;							// Called whenever a new live print starts (see M24)
 	void StoppedPrint() noexcept;							// Called whenever a file print has stopped
+	void ReparseFileInfo() noexcept;						// Unlayered: the file being printed has grown to completion under us - parse it again
 	void SetLayerNumber(uint32_t layerNumber) noexcept;		// Set the current layer number
 	void SetLayerZ(float layerZ) noexcept;					// Set the printing height of the new layer
 	void LayerChange() noexcept;							// Report that a new layer has started

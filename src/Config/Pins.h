@@ -115,6 +115,29 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 # define ALLOW_ARBITRARY_PANELDUE_PORT (0)
 #endif
 
+// Unlayered3D: stream a firmware image out of an aux port to an Unlayered ESP32 panel (M997 S5).
+// Independent of SUPPORT_PANELDUE_FLASH - it shares neither the transport nor the protocol, only
+// the M997 scaffolding. Off by default and enabled per board, because it is only useful where
+// one of our panels is actually wired to aux0. See Developer-documentation/panel-firmware-push.md.
+#ifndef SUPPORT_PANEL_OTA
+# define SUPPORT_PANEL_OTA		0
+#endif
+
+#if SUPPORT_PANEL_OTA && (NUM_ASYNC_CHANNELS == 0)
+# error Cannot support the panel firmware push without async channels
+#endif
+
+// Unlayered3D: accept a G-code file streamed in from an Unlayered ESP32 panel over an aux port into
+// 0:/gcodes/panel/ and print it while it is still arriving (M1760-M1762). Off by default and enabled
+// per board, like SUPPORT_PANEL_OTA. See Developer-documentation/panel-file-stream.md.
+#ifndef SUPPORT_PANEL_PRINT
+# define SUPPORT_PANEL_PRINT	0
+#endif
+
+#if SUPPORT_PANEL_PRINT && (NUM_ASYNC_CHANNELS == 0 || !HAS_MASS_STORAGE)
+# error The panel file stream needs an aux port and an SD card
+#endif
+
 #ifndef USE_CACHE
 # define USE_CACHE				0
 #endif

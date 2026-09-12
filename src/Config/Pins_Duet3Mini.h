@@ -74,6 +74,8 @@ constexpr uint32_t IAP_IMAGE_START = 0x20038000;
 #define SUPPORT_KEEPOUT_ZONES	1
 #define SUPPORT_MODBUS_RTU		1
 #define SUPPORT_MMU2S			1
+#define SUPPORT_PANEL_OTA		1
+#define SUPPORT_PANEL_PRINT		1
 
 #define USE_CACHE				1					// set nonzero to enable the cache
 #define USE_MPU					0					// set nonzero to enable the memory protection unit
@@ -310,7 +312,10 @@ constexpr UartParameters Serial0Params =
 	.pinFunction = GpioPinFunction::D,
 	.dataInPad = 1,
 	.dataOutPad = 0,
-	.numRxSlots = 512,
+	// Unlayered: 2048, up from 512, so a whole PanelPrintChunkMax body plus the next header line fits in the
+	// ring while the main loop is busy syncing the previous one to the card. At 115200 a 512-byte ring fills in
+	// 44 ms, and a stall that long mid-body loses bytes as 0x7F. Costs 1.5 kB of RAM. IO1 is unchanged.
+	.numRxSlots = 2048,
 	.numTxSlots = 512
 };
 
