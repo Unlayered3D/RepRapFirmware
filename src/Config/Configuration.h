@@ -185,10 +185,17 @@ constexpr size_t ShortGCodeLength = 64;
 // for the HTTP responder to return a status response. Otherwise DWC never gets to know that it needs to make a rr_reply call and the system deadlocks.
 #if SAME70 || SAME5x
 constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
-// Unlayered3D: was 40. A PanelDue-mode OM push can hold ~20 buffers for a second or more while it drains
-// over the 57600-baud aux link, which left fewer than MinimumBuffersForObjectModel free and made rr_model
+// Unlayered3D: was 40, then 64. A PanelDue-mode OM push can hold ~20 buffers for a second or more while
+// it drains over the aux link, which left fewer than MinimumBuffersForObjectModel free and made rr_model
 // return 501 (see HttpResponder.cpp) - i.e. DWC repeatedly losing the connection during prints/macros.
-constexpr size_t OUTPUT_BUFFER_COUNT = 64;				// How many OutputBuffer instances do we have?
+// 64 was sized for a 57600-baud aux link. The fleet runs the panel at 115200, which roughly halves the
+// hold, and each OutputBuffer costs ~284 bytes of heap (data[256] + members, new-allocated in Init()).
+// On a five-axis SAME5x that heap is the same pool the MoveSegment ratchet eats, and 64 took ~6.8 kB of
+// the ~10 kB the reduced DDA ring freed - .90 reset OutOfMemory with 16 bytes free mid-print on
+// 2026-09-11 (see Move.h). 48 returns ~4.5 kB and still allows 28 buffers in use before rr_model 501s,
+// against the ~10 a 115200 panel holds. Re-check M122 "Used output buffers: n of 48 (m max)" before
+// lowering further, and see Move.h before raising it.
+constexpr size_t OUTPUT_BUFFER_COUNT = 48;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 4;			// Number of reserved output buffers after long responses, enough to hold a status response
 constexpr size_t MinimumBuffersForObjectModel = 20;		// Minimum number of free buffers we want before we start assembling a request for the object model
 // Unlayered3D: budget for a single root-array object-model response. Upstream derived this from
