@@ -689,10 +689,13 @@ GCodeResult EndstopsManager::HandleM558(GCodeBuffer& gb, const StringRef &reply)
 					if (   probeNumber != 0
 						&& (   probeType == (unsigned int)ZProbeType::analog || probeType == (unsigned int)ZProbeType::alternateAnalog
 							|| probeType == (unsigned int)ZProbeType::dumbModulated || probeType == (unsigned int)ZProbeType::digital
+#if SUPPORT_DIFFERENTIAL_PROBES
+						|| probeType == (unsigned int)ZProbeType::differentialAnalog
+#endif
 						   )
 					   )
 				{
-					reply.copy("Types 1,2,3 and 5 are available for Z probe 0 only");
+					reply.copy("Types 1,2,3,5 and 12 are available for Z probe 0 only");
 					return GCodeResult::error;
 				}
 				else

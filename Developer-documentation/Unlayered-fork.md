@@ -20,9 +20,10 @@ Three differential mappings exist:
 |---|---|---|
 | `coreXBYC`  | 15 | The earlier hand-derived mapping. Superseded. |
 | `coreXBYC2` | 16 | **In production** on both five-axis machines. |
-| `coreXBYC3` | 17 | K16's matrix, but homes the differential pairs as individual drives (`GetHomingMode`). The only behavioural difference from K16. |
+| `coreXBYCTilt` | 17 | **Experimental.** K16's matrix with B measured as tilt from vertical: `B0` = nozzle straight down, `B90` = straight out (K16's `B-90` / `B0`). Only the arm trig sees the shift (`BTrigOffset`), so XYZ mean exactly what they mean under K16; B values, B limits and homing B position move by +90. |
 
-All three are kept so existing `config.g` files keep working. Prefer K16 for new machines.
+K17 used to be `coreXBYC3` (K16 with per-drive homing). No machine used it, so it was replaced.
+Prefer K16 for new machines.
 
 Geometry is configured by `M669` parameters, all documented on the member declarations in
 the header: `A`=a5, `D`=d6, `R`=bRatio, `Q`=cRatio, `X`=xSkew, `Y`=ySkew, `U`=xzSkew,

@@ -20,6 +20,7 @@ public:
 	~LocalZProbe() noexcept override;
 
 	int32_t GetRawReading() const noexcept override;
+	uint16_t GetUnscaledAnalogReading() const noexcept override;
 	bool SetProbing(bool isProbing) noexcept override;
 	GCodeResult AppendPinNames(const StringRef& str) noexcept override;
 	GCodeResult Configure(GCodeBuffer& gb, const StringRef& reply, bool& seen) THROWS(GCodeException) override;

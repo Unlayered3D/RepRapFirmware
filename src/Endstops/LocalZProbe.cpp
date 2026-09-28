@@ -46,6 +46,9 @@ GCodeResult LocalZProbe::Configure(GCodeBuffer& gb, const StringRef &reply, bool
 		break;
 
 	case ZProbeType::alternateAnalog:
+#if SUPPORT_DIFFERENTIAL_PROBES
+	case ZProbeType::differentialAnalog:
+#endif
 		access[0] = PinAccess::readAnalog;
 		access[1] = PinAccess::write0;
 		break;
@@ -101,6 +104,9 @@ int32_t LocalZProbe::GetRawReading() const noexcept
 	case ZProbeType::dumbModulated:
 	case ZProbeType::alternateAnalog:
 	case ZProbeType::scanningAnalog:
+#if SUPPORT_DIFFERENTIAL_PROBES
+	case ZProbeType::differentialAnalog:
+#endif
 		return (int32_t)min<uint32_t>(inputPort.ReadAnalog() >> (AdcBits - 10), MaxReading);
 
 	case ZProbeType::digital:
@@ -113,8 +119,40 @@ int32_t LocalZProbe::GetRawReading() const noexcept
 	}
 }
 
+// Return the ADC reading without the shift and clamp that GetRawReading applies, for diagnostics only.
+// GetRawReading discards the bottom (AdcBits - 10) bits and clamps at 1000, which is fine for a threshold test but hides whether there is
+// usable signal below that quantisation.
+uint16_t LocalZProbe::GetUnscaledAnalogReading() const noexcept
+{
+	switch (type)
+	{
+	case ZProbeType::analog:
+	case ZProbeType::dumbModulated:
+	case ZProbeType::alternateAnalog:
+	case ZProbeType::scanningAnalog:
+#if SUPPORT_DIFFERENTIAL_PROBES
+	case ZProbeType::differentialAnalog:
+#endif
+		return inputPort.ReadAnalog();
+
+	default:
+		return 0;
+	}
+}
+
 bool LocalZProbe::SetProbing(bool isProbing) noexcept
 {
+#if SUPPORT_DIFFERENTIAL_PROBES
+	if (type == ZProbeType::differentialAnalog)
+	{
+		if (isProbing && misc.parts.probingAway)
+		{
+			return false;					// "probe until contact lost" has no meaning for an edge detector
+		}
+		ArmDifferential(isProbing);
+		return true;						// no modulation pin for this type
+	}
+#endif
 	// For Z probe types other than 1/2/3 and bltouch we set the modulation pin high at the start of a probing move and low at the end
 	// Don't do this for bltouch because on the Maestro, the MOD pin is normally used as the servo control output
 	if (type > ZProbeType::alternateAnalog && type != ZProbeType::blTouch)

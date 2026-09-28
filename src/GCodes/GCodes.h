@@ -502,6 +502,9 @@ private:
 #if SUPPORT_PANEL_PRINT
 	GCodeResult HandlePanelPrintCommand(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// M1760-M1762 handler
 #endif
+#if HAS_MASS_STORAGE
+	GCodeResult HandleFileReadCommand(GCodeBuffer& gb, const StringRef& reply, OutputBuffer *_ecv_null& outBuf) THROWS(GCodeException);	// M1763 handler
+#endif
 	bool ChangeMicrostepping(size_t axisOrExtruder, unsigned int microsteps, bool interp, const StringRef& reply) const noexcept; // Change microstepping on the specified drive
 	void CheckTriggers() noexcept;															// Check for and execute triggers
 	void DoEmergencyStop() noexcept;														// Execute an emergency stop

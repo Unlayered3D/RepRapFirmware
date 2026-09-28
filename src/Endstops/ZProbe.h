@@ -17,6 +17,7 @@ public:
 
 	virtual void SetIREmitter(bool on) const noexcept = 0;			// caution, this is called from within the tick ISR
 	virtual int32_t GetRawReading() const noexcept = 0;
+	virtual uint16_t GetUnscaledAnalogReading() const noexcept { return 0; }	// full-resolution ADC reading, for diagnostics only; 0 if this probe has no local analog input
 	virtual bool SetProbing(bool isProbing) noexcept = 0;			// put the probe in the probing state, returning true if successful
 	virtual GCodeResult AppendPinNames(const StringRef& str) noexcept = 0;		// not const because it may update the state too
 	virtual GCodeResult Configure(GCodeBuffer& gb, const StringRef& reply, bool& seen) THROWS(GCodeException);		// 'seen' is an in-out parameter
@@ -66,6 +67,8 @@ public:
 	unsigned int GetMaxTaps() const noexcept { return misc.parts.maxTaps; }
 	int32_t GetReading() const noexcept;
 	int32_t GetSecondaryValues(int32_t& v1) const noexcept;
+	size_t GetNumReportedValues() const noexcept;					// number of entries in the object model 'value' array for this probe type
+	int32_t GetReportedValue(unsigned int index) const noexcept;	// entry 'index' of the object model 'value' array
 	bool IsDeployedByUser() const noexcept { return isDeployedByUser; }
 
 	void PrepareForUse(const bool probingAway) noexcept;
@@ -84,6 +87,21 @@ public:
 	void CalibrateScanningProbe(const int32_t calibrationReadings[], size_t numCalibrationReadingsTaken, float heightChangePerPoint, const StringRef& reply) noexcept;
 	float ConvertReadingToHeightDifference(int32_t reading) const noexcept;
 	void ClearTouchTriggered() noexcept { touchTriggered = false; }		// called before doing a probing move so we don't get an "already triggered" error
+#endif
+
+#if SUPPORT_DIFFERENTIAL_PROBES
+	// Differential Z probe support. The whole detector runs in the 1kHz tick and publishes single naturally-atomic words;
+	// Stopped() reads one byte, which is the only thing the step ISR touches.
+	bool IsDifferential() const noexcept { return type == ZProbeType::differentialAnalog; }
+	void TakeTickSample() noexcept { if (IsDifferential()) { ProcessDifferentialSample(GetRawReading()); } }
+	void ArmDifferential(bool isProbing) noexcept;				// called from SetProbing: capture the baseline and start the blanking window
+	int32_t GetDiffDelta() const noexcept { return diffDelta; }
+	int32_t GetDiffFiltered() const noexcept { return diffFiltered; }
+	int32_t GetDiffTrigger() const noexcept { return diffTrigger; }
+	GCodeResult ConfigureDifferential(GCodeBuffer& gb, bool& seen) THROWS(GCodeException);
+	void AppendDifferentialReport(const StringRef& reply) const noexcept;
+#else
+	void TakeTickSample() noexcept { }
 #endif
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
@@ -133,6 +151,28 @@ protected:
 	bool isCalibrated = false;
 	bool useTouchMode = false;
 	bool touchTriggered = false;		// the state of the probe, used when it is in touch mode
+#endif
+
+#if SUPPORT_DIFFERENTIAL_PROBES
+	void ProcessDifferentialSample(int32_t raw) noexcept;		// called from the tick ISR only
+	void ResetDifferential() noexcept;							// force a re-prime, e.g. after the type or a time constant changes
+	void RecalcDifferentialShifts() noexcept;
+
+	int32_t diffFastQ, diffSlowQ;				// Q12, tick ISR only
+	int32_t diffLpQ[MaxDiffOrder];				// Q12 lowpass cascade, tick ISR only
+	int32_t diffHpQ[MaxDiffOrder];				// Q12 highpass cascade, tick ISR only
+	int32_t diffArmedBaseline;					// whole counts, captured at SetProbing(true)
+	volatile int16_t diffDelta;					// whole counts, published for reporting
+	volatile int16_t diffFiltered;				// whole counts, the value the trigger test uses
+	volatile int8_t diffTrigger;				// -1, 0 or +1. The only word the step ISR reads
+	uint16_t diffHoldTicks, diffPrimeTicks, diffBlankTicks;
+	uint16_t diffFastMillis, diffSlowMillis, diffIntMillis, diffHoldMillis, diffBlankMillis;
+	uint8_t diffFastShift, diffSlowShift, diffIntShift;
+	uint8_t diffOrder;							// number of lowpass poles (top skirt), 6dB/octave each
+	uint8_t diffHpOrder;						// number of highpass poles (bottom skirt), 6dB/octave each
+	uint8_t diffDirection;						// 0 = either, 1 = rising only, 2 = falling only
+	uint8_t diffSource;							// 0 = lowpass the delta (HP then LP), 1 = lowpass the raw then subtract the baseline
+	bool diffProbing;
 #endif
 
 	uint8_t number;

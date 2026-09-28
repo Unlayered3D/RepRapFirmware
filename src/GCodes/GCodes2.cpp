@@ -4840,6 +4840,16 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 #endif
 
+#if HAS_MASS_STORAGE
+			case 1763:	// Unlayered: read part of a file back, base64 encoded
+				if (!LockFileSystem(gb))				// don't read a file another channel is mid-way through writing
+				{
+					return false;
+				}
+				result = HandleFileReadCommand(gb, reply, outBuf);
+				break;
+#endif
+
 			default:
 #if HAS_SBC_INTERFACE
 				// Send unknown non-binary codes to DSF so potential plugins can interpret them
@@ -5169,6 +5179,186 @@ GCodeResult GCodes::HandlePanelPrintCommand(GCodeBuffer& gb, const StringRef& re
 	default:
 		return pps.Finish(gb, reply);
 	}
+}
+
+#endif
+
+#if HAS_MASS_STORAGE
+
+// The most file data M1763 will return in one reply. Base64 inflates it by 4/3, so 512 bytes
+// becomes 684 characters plus the JSON around it - about three OutputBuffers. Deliberately modest:
+// output buffers are a shared, scarce resource, and starving them takes DWC down with it.
+constexpr size_t FileReadMaxChunk = 512;
+
+// Encoded in groups of 3 bytes so no padding appears until the end of the payload. 48 is the
+// largest multiple of 3 that keeps the stack cost trivial, and it is independent of the chunk
+// size above - raising that costs output buffers, never stack.
+constexpr size_t FileReadGroupBytes = 48;
+
+static constexpr const char *_ecv_array Base64Alphabet =
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Encode 'len' bytes to 'out', which must have room for 4*ceil(len/3) characters plus a null.
+// Returns the number of characters written.
+static size_t EncodeBase64(const uint8_t *_ecv_array src, size_t len, char *_ecv_array out) noexcept
+{
+	size_t o = 0, i = 0;
+	while (i + 3 <= len)
+	{
+		const uint32_t v = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8) | (uint32_t)src[i + 2];
+		out[o++] = Base64Alphabet[(v >> 18) & 0x3F];
+		out[o++] = Base64Alphabet[(v >> 12) & 0x3F];
+		out[o++] = Base64Alphabet[(v >> 6) & 0x3F];
+		out[o++] = Base64Alphabet[v & 0x3F];
+		i += 3;
+	}
+	const size_t rem = len - i;
+	if (rem != 0)
+	{
+		const uint32_t v = ((uint32_t)src[i] << 16) | ((rem > 1) ? ((uint32_t)src[i + 1] << 8) : 0);
+		out[o++] = Base64Alphabet[(v >> 18) & 0x3F];
+		out[o++] = Base64Alphabet[(v >> 12) & 0x3F];
+		out[o++] = (rem > 1) ? Base64Alphabet[(v >> 6) & 0x3F] : '=';
+		out[o++] = '=';
+	}
+	out[o] = 0;
+	return o;
+}
+
+// M1763 P"0:/sys/config.g" O<offset> L<len>
+//
+// Read part of a file back, base64 encoded. Reading a file is the one thing the rr_* HTTP API can
+// do that a G-code channel could not, and without it a slicer connected over USB cannot back up the
+// files it is about to overwrite, nor read 0:/sys/unlayered-sys.json to report which config is
+// installed. Unlike M1760-M1762 this is deliberately NOT restricted to an aux port - USB is the
+// whole point of it.
+//
+// The reply is one JSON object under "fread", so it parses like the panel stream's replies:
+//   {"fread":{"path":"0:/sys/config.g","offset":0,"size":10240,"len":512,"eof":false,"data":"..."}}
+// Paths resolve exactly as M38's do (FS_PREFIX), so the two agree on what a given name means, and
+// an absolute path such as 0:/firmware/x.uf2 works. 'len' is what was actually encoded, which may
+// be less than L asked for, so a caller always continues from offset+len rather than assuming.
+// Reading at or past EOF is not an error - it returns len 0 and eof true, which is how a caller
+// that does not know the length stops. A missing file IS an error, reported the way M38 reports
+// one, which is how a caller tells "nothing to back up" from "the read failed".
+GCodeResult GCodes::HandleFileReadCommand(GCodeBuffer& gb, const StringRef& reply, OutputBuffer *_ecv_null& outBuf) THROWS(GCodeException)
+{
+	String<MaxFilenameLength> filename;
+	gb.MustSee('P');
+	gb.GetQuotedString(filename.GetRef());
+
+	const FilePosition offset = (gb.Seen('O')) ? (FilePosition)gb.GetUIValue() : 0;
+	size_t wanted = (gb.Seen('L')) ? (size_t)gb.GetUIValue() : FileReadMaxChunk;
+	if (wanted > FileReadMaxChunk)
+	{
+		wanted = FileReadMaxChunk;
+	}
+
+	FileStore *_ecv_null const f = platform.OpenFile(FS_PREFIX, filename.c_str(), OpenMode::read);
+	if (f == nullptr)
+	{
+		reply.printf("Cannot open file: %s", filename.c_str());
+		return GCodeResult::error;
+	}
+
+	const FilePosition fileLength = f->Length();
+	if (offset >= fileLength)
+	{
+		wanted = 0;
+	}
+	else if ((FilePosition)wanted > fileLength - offset)
+	{
+		wanted = (size_t)(fileLength - offset);
+	}
+
+	if (wanted != 0 && !f->Seek(offset))
+	{
+		f->Close();
+		reply.copy("error reading file");
+		return GCodeResult::error;
+	}
+
+	// Allocate before encoding anything: if no buffer is free the whole command is retried, and a
+	// retry must not have written a partial reply.
+	if (!OutputBuffer::Allocate(outBuf, false))
+	{
+		f->Close();
+		return GCodeResult::notFinished;
+	}
+
+	// Leave room for the JSON around the payload so the reply can never be truncated mid-string.
+	// Four base64 characters per three bytes, and the trailer is well under 64 characters.
+	constexpr size_t JsonOverhead = 160;
+	const size_t roomForData = OutputBuffer::GetBytesLeft(outBuf);
+	const size_t maxFromBuffer = (roomForData > JsonOverhead + MaxFilenameLength)
+									? ((roomForData - JsonOverhead - MaxFilenameLength) / 4) * 3
+									: 0;
+	if (wanted > maxFromBuffer)
+	{
+		wanted = maxFromBuffer;
+	}
+
+	// A filename that reached us through GetQuotedString cannot contain a quote or a backslash -
+	// FAT does not allow either - so it needs no JSON escaping.
+	outBuf->printf("{\"fread\":{\"path\":\"%s\",\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",",
+					filename.c_str(), (uint32_t)offset, (uint32_t)fileLength);
+
+	alignas(4) uint8_t buffer[FileReadGroupBytes];
+	char encoded[(FileReadGroupBytes / 3) * 4 + 1];
+	size_t done = 0;
+	bool readFailed = false;
+
+	// Emit "data" first as a streamed string so nothing has to be buffered whole, then the counts
+	// that describe it. A caller reads the object, not the field order.
+	String<64> tail;
+	{
+		size_t pending = wanted;
+		size_t emitted = 0;
+		bool started = false;
+		while (pending != 0)
+		{
+			const size_t thisTime = min<size_t>(pending, FileReadGroupBytes);
+			const int n = f->Read((char *_ecv_array)buffer, thisTime);
+			if (n <= 0)
+			{
+				readFailed = (n < 0);
+				break;
+			}
+			if (!started)
+			{
+				outBuf->cat("\"data\":\"");
+				started = true;
+			}
+			// Only the final group may be short, so padding can only ever appear at the end.
+			const size_t enc = EncodeBase64(buffer, (size_t)n, encoded);
+			outBuf->cat(encoded, enc);
+			emitted += (size_t)n;
+			pending -= (size_t)n;
+			if ((size_t)n < thisTime)
+			{
+				break;						// short read: treat what we got as the whole answer
+			}
+		}
+		if (!started)
+		{
+			outBuf->cat("\"data\":\"");
+		}
+		done = emitted;
+		tail.printf("\",\"len\":%u,\"eof\":%s}}",
+					(unsigned int)done, (offset + done >= fileLength) ? "true" : "false");
+	}
+	f->Close();
+
+	if (readFailed)
+	{
+		OutputBuffer::ReleaseAll(outBuf);
+		outBuf = nullptr;
+		reply.copy("error reading file");
+		return GCodeResult::error;
+	}
+
+	outBuf->cat(tail.c_str());
+	return GCodeResult::ok;
 }
 
 #endif

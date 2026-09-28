@@ -618,6 +618,26 @@ private:
 	volatile ZProbeAveragingFilter zProbeOnFilter;					// Z probe readings we took with the IR turned on
 	volatile ZProbeAveragingFilter zProbeOffFilter;					// Z probe readings we took with the IR turned off
 
+	// Z probe sample rate instrumentation. The tick reads the probe at 1kHz, but on SAME5x the ADC publishes through a cache written by the
+	// AnalogIn task, so the value only actually changes once per ADC sequence. Comparing these two counters over a known interval gives the
+	// real sample rate rather than the assumed one. Written only by the tick ISR, read and reset by Diagnostics.
+	volatile uint32_t zProbeTickReads;								// number of times the tick ISR has read the Z probe since the counters were reset
+	volatile uint32_t zProbeTickChanges;							// how many of those reads returned a different value from the one before
+	uint32_t zProbeTickStatsStartTime;								// when the counters were last reset
+	int32_t lastZProbeTickReading;									// the value returned by the previous read. Tick ISR only.
+
+	// Record a Z probe reading taken by the tick ISR and return it unchanged, so this can wrap the existing calls.
+	int32_t RecordZProbeTickReading(int32_t reading) noexcept
+	{
+		zProbeTickReads = zProbeTickReads + 1;					// read and write the volatile explicitly, '++' on a volatile is deprecated
+		if (reading != lastZProbeTickReading)
+		{
+			zProbeTickChanges = zProbeTickChanges + 1;
+			lastZProbeTickReading = reading;
+		}
+		return reading;
+	}
+
 	// GPIO pins
 	GpOutputPort gpoutPorts[MaxGpOutPorts];
 	GpInputPort gpinPorts[MaxGpInPorts];

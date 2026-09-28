@@ -87,9 +87,9 @@ void FiveAxisKinematics::Recalc() noexcept {
 	{
 		//update the matrix with new values
 		// Three differential mappings exist. coreXBYC2 (M669 K16) is the one in production use on
-		// the Unlayered machines; coreXBYC (K15) is the earlier hand-derived mapping and coreXBYC3
-		// (K17) is K16's matrix with per-drive homing instead of Cartesian homing (see GetHomingMode).
-		// All three are kept so an existing config.g keeps working; prefer K16 for new machines.
+		// the Unlayered machines; coreXBYC (K15) is the earlier hand-derived mapping and coreXBYCTilt
+		// (K17, experimental) is K16's matrix with B re-zeroed so B0 = nozzle down (see BTrigOffset).
+		// K17 used to be coreXBYC3 (K16 with per-drive homing); no machine used it, so it was replaced.
 		switch (GetKinematicsType()) {
 		case KinematicsType::cartesian:
 		default:
@@ -154,7 +154,7 @@ void FiveAxisKinematics::Recalc() noexcept {
 			break;
 			//for the new kinematics
 		case KinematicsType::coreXBYC2:
-		case KinematicsType::coreXBYC3:
+		case KinematicsType::coreXBYCTilt:		// same mechanism as K16; only the B zero differs (see BTrigOffset)
 			//DIFFERENTIAL MATRIX
 			//This matrix maps motor drivers to each axis
 			/*   0    1     2    3    4
@@ -364,8 +364,8 @@ const char* _ecv_array FiveAxisKinematics::GetName(
 	case KinematicsType::coreXBYC2:
 		return (forStatusReport) ? "coreXBYC2" : "CoreXBYC2";
 
-	case KinematicsType::coreXBYC3:
-		return (forStatusReport) ? "coreXBYC3" : "CoreXBYC3";
+	case KinematicsType::coreXBYCTilt:
+		return (forStatusReport) ? "coreXBYCTilt" : "CoreXBYCTilt";
 	default:
 		return "unknown";
 	}
@@ -477,8 +477,9 @@ MovementError FiveAxisKinematics::CartesianToMotorSteps(
 	float rotatedMachinePos[] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
 
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = (float)cos(M_PI / 180.0 * machinePos[3]);
-	float sinT5 = (float)sin(M_PI / 180.0 * machinePos[3]);
+	const float bArm = machinePos[3] + BTrigOffset();
+	float cosT5 = (float)cos(M_PI / 180.0 * bArm);
+	float sinT5 = (float)sin(M_PI / 180.0 * bArm);
 	float cosT1 = (float)cos(M_PI / 180.0 * machinePos[4]);
 	float sinT1 = (float)sin(M_PI / 180.0 * machinePos[4]);
 
@@ -551,8 +552,9 @@ void FiveAxisKinematics::MotorStepsToCartesian(const int32_t motorPos[],
 	//we now have our rotated position, but we cant get ahead of ourelves and set the machine pos. We have to undo the rotations. :(
 	//first thing is to figure out what the rotations actually are. The rotations "rotated" doesnt mean anything...
 	//get the factors of the current B and C axes. T5 is the B, T1 is the C
-	float cosT5 = (float)cos(M_PI / 180.0 * rotatedPosition[3]);
-	float sinT5 = (float)sin(M_PI / 180.0 * rotatedPosition[3]);
+	const float bArm = rotatedPosition[3] + BTrigOffset();
+	float cosT5 = (float)cos(M_PI / 180.0 * bArm);
+	float sinT5 = (float)sin(M_PI / 180.0 * bArm);
 	float cosT1 = (float)cos(M_PI / 180.0 * rotatedPosition[4]);
 	float sinT1 = (float)sin(M_PI / 180.0 * rotatedPosition[4]);
 

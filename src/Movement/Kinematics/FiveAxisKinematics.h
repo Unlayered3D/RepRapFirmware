@@ -31,16 +31,7 @@ public:
 	void MotorStepsToCartesian(const int32_t motorPos[],
 			const float stepsPerMm[], size_t numVisibleAxes,
 			size_t numTotalAxes, float machinePos[]) const noexcept override;
-	HomingMode GetHomingMode() const noexcept override {
-		// coreXBYC3 (M669 K17) exists specifically to home the differential pairs as individual
-		// drives; coreXBYC and coreXBYC2 home as Cartesian axes. This is the only behavioural
-		// difference between K16 and K17. K16 is the variant in production use.
-		if (GetKinematicsType() == KinematicsType::coreXBYC3) {
-			return HomingMode::homeIndividualDrives;
-		} else {
-			return HomingMode::homeCartesianAxes;
-		}
-	}
+	HomingMode GetHomingMode() const noexcept override { return HomingMode::homeCartesianAxes; }
 	void LimitSpeedAndAcceleration(DDA &dda,
 			const float *_ecv_array normalisedDirectionVector,
 			size_t numVisibleAxes,
@@ -59,6 +50,13 @@ private:
 	bool HasSharedMotor(size_t axis) const noexcept;// return true if the axis doesn't have a single dedicated motor
 
 	float getRotationMatrixValue(uint8_t num, float cosN, float sinN) const noexcept ;
+
+	// Degrees added to the commanded B before it goes into the arm trig. K15/K16 measure B from the
+	// horizontal (B-90 = nozzle straight down). K17 measures it as tilt from vertical, so B0 = straight
+	// down and B90 = straight out, which is B-90 and B0 in the K16 frame. Only the trig sees the shift:
+	// the linear B->motor mapping is unchanged, and because the arm offsets stay referenced to the same
+	// physical pose, XYZ mean exactly what they mean under K16 - only B values and B limits move by 90.
+	float BTrigOffset() const noexcept { return (GetKinematicsType() == KinematicsType::coreXBYCTilt) ? -90.0f : 0.0f; }
 	// Primary parameters
 	FixedMatrix<float, MaxAxes, MaxAxes> inverseMatrix;	// maps coordinates to motor positions
 

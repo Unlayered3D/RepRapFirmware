@@ -49,15 +49,8 @@ constexpr ObjectModelArrayTableEntry ZProbe::objectModelArrayTable[] =
 	// 3. Values
 	{
 		nullptr,
-		OBJECT_MODEL_ARRAY_COUNT((self->type == ZProbeType::dumbModulated) ? 2 : 1),
-		[] (const ObjectModel *self, ObjectExplorationContext& context) noexcept -> ExpressionValue
-					{	int32_t v1 = 0;
-						return ExpressionValue
-								(	(context.GetLastIndex() == 0)
-									? (int32_t)((const ZProbe*)self)->GetReading()
-									: (((const ZProbe*)self)->GetSecondaryValues(v1), v1)
-								);
-					}
+		OBJECT_MODEL_ARRAY_COUNT(self->GetNumReportedValues()),
+		OBJECT_MODEL_ARRAY_VALUE(self->GetReportedValue(context.GetLastIndex()))
 	},
 	// 4. Dive heights
 	{
@@ -158,6 +151,19 @@ void ZProbe::SetDefaults() noexcept
 	misc.parts.turnHeatersOff = misc.parts.saveToConfigOverride = misc.parts.probingAway = false;
 	type = ZProbeType::none;
 	sensor = -1;
+#if SUPPORT_DIFFERENTIAL_PROBES
+	diffFastMillis = DefaultDiffFastMillis;
+	diffSlowMillis = DefaultDiffSlowMillis;
+	diffIntMillis = DefaultDiffIntMillis;
+	diffHoldMillis = DefaultDiffHoldMillis;
+	diffBlankMillis = DefaultDiffBlankMillis;
+	diffOrder = DefaultDiffOrder;
+	diffHpOrder = 1;							// a steeper bottom skirt eats the wide part of a real contact, so default to one pole
+	diffDirection = DefaultDiffDirection;
+	diffSource = 1;								// lowpass the raw signal, then subtract the baseline
+	RecalcDifferentialShifts();
+	ResetDifferential();
+#endif
 }
 
 // Prepare to use this Z probe
@@ -268,6 +274,10 @@ int32_t ZProbe::GetReading() const noexcept
 			case ZProbeType::analog:				// Simple or intelligent IR sensor
 			case ZProbeType::alternateAnalog:		// Alternate sensor
 			case ZProbeType::digital:				// Switch connected to Z probe input
+#if SUPPORT_DIFFERENTIAL_PROBES
+			case ZProbeType::differentialAnalog:	// keep the boxcar here: the detector uses GetRawReading in the tick, and
+													// macros that sample value[0] after a jab need the averaged excursion, not an instant
+#endif
 				zProbeVal = (int32_t)((p.GetZProbeOnFilter().GetSum() + p.GetZProbeOffFilter().GetSum()) / (int32_t)(2 * ZProbeAverageReadings));
 				break;
 
@@ -320,9 +330,77 @@ int32_t ZProbe::GetSecondaryValues(int32_t& v1) const noexcept
 	return 0;
 }
 
+// Return the number of entries in the object model 'value' array for this probe type.
+// Index 0 is always the reading that the trigger test uses. For probes with a local analog input we also report the unfiltered reading and the
+// full-resolution ADC reading, because the filtered value hides both the true shape of a fast transient and the real ADC sample rate.
+size_t ZProbe::GetNumReportedValues() const noexcept
+{
+#if SUPPORT_CAN_EXPANSION
+	if (IsRemote())
+	{
+		return 1;											// a remote probe has no local ADC, so the extra values would be meaningless
+	}
+#endif
+	switch (type)
+	{
+	case ZProbeType::dumbModulated:
+		return 2;											// [1] is the reading with the IR emitter turned on
+
+#if SUPPORT_DIFFERENTIAL_PROBES
+	case ZProbeType::differentialAnalog:
+		return 6;											// [3] delta, [4] filtered, [5] trigger state -1/0/+1
+#endif
+
+	case ZProbeType::analog:
+	case ZProbeType::alternateAnalog:
+	case ZProbeType::scanningAnalog:
+		return 3;											// [1] is the unfiltered reading, [2] is the full-resolution ADC reading
+
+	default:
+		return 1;
+	}
+}
+
+// Return entry 'index' of the object model 'value' array. See GetNumReportedValues for which indices are valid for each probe type.
+int32_t ZProbe::GetReportedValue(unsigned int index) const noexcept
+{
+	switch (index)
+	{
+	case 1:
+		if (type == ZProbeType::dumbModulated)
+		{
+			int32_t v1 = 0;
+			(void)GetSecondaryValues(v1);
+			return v1;
+		}
+		return GetRawReading();
+
+	case 2:
+		return (int32_t)GetUnscaledAnalogReading();
+
+#if SUPPORT_DIFFERENTIAL_PROBES
+	case 3:
+		return diffDelta;
+	case 4:
+		return diffFiltered;
+	case 5:
+		return diffTrigger;
+#endif
+
+	default:
+		return GetReading();
+	}
+}
+
 // Test whether we are at or near the stop. May be called from an ISR as well and from a normal task context.
 bool ZProbe::Stopped() const noexcept
 {
+#if SUPPORT_DIFFERENTIAL_PROBES
+	if (type == ZProbeType::differentialAnalog)
+	{
+		return diffTrigger != 0;				// a single byte, so the step ISR can never see a torn value
+	}
+#endif
 #if SUPPORT_SCANNING_PROBES
 	if (type == ZProbeType::scanningAnalog && useTouchMode)
 	{
@@ -537,6 +615,18 @@ GCodeResult ZProbe::Configure(GCodeBuffer& gb, const StringRef &reply, bool& see
 		seen = true;
 	}
 
+#if SUPPORT_DIFFERENTIAL_PROBES
+	if (type == ZProbeType::differentialAnalog)
+	{
+		const GCodeResult rslt = ConfigureDifferential(gb, seen);
+		if (rslt != GCodeResult::ok)
+		{
+			reply.copy("M558: slow time constant W must be greater than fast time constant V");
+			return rslt;
+		}
+	}
+#endif
+
 	if (seen)
 	{
 		reprap.SensorsUpdated();
@@ -558,8 +648,180 @@ GCodeResult ZProbe::Configure(GCodeBuffer& gb, const StringRef &reply, bool& see
 					(double)recoveryTime,
 					(misc.parts.turnHeatersOff) ? "suspended" : "normal",
 						misc.parts.maxTaps, (double)tolerance);
+#if SUPPORT_DIFFERENTIAL_PROBES
+	if (type == ZProbeType::differentialAnalog)
+	{
+		AppendDifferentialReport(reply);
+	}
+#endif
 	return rslt;
 }
+
+#if SUPPORT_DIFFERENTIAL_PROBES
+
+// Convert a time constant in milliseconds to a shift count for a single-pole EMA sampled by the 1kHz tick.
+// Clamped on the way in, because a shift of 32 or more is undefined behaviour and the value comes from a G-code parameter.
+static uint8_t MillisToShift(uint32_t ms) noexcept
+{
+	if (ms < 1) { ms = 1; }
+	if (ms > MaxDiffTimeConstantMillis) { ms = MaxDiffTimeConstantMillis; }
+	unsigned int sh = 31u - (unsigned int)__builtin_clz(ms);						// floor(log2(ms))
+	if (sh < 12 && (ms - (1u << sh)) > ((1u << (sh + 1)) - ms)) { ++sh; }			// round to nearest power of two
+	return (uint8_t)min<unsigned int>(sh, 12);
+}
+
+void ZProbe::RecalcDifferentialShifts() noexcept
+{
+	if (diffOrder < 1) { diffOrder = 1; }
+	if (diffOrder > MaxDiffOrder) { diffOrder = MaxDiffOrder; }
+	if (diffHpOrder < 1) { diffHpOrder = 1; }
+	if (diffHpOrder > MaxDiffOrder) { diffHpOrder = MaxDiffOrder; }
+	diffFastShift = MillisToShift(diffFastMillis);
+	diffSlowShift = MillisToShift(diffSlowMillis);
+	// Each pole of the cascade gets 1/order of the requested time constant, so changing the order changes the rolloff and not the delay
+	diffIntShift = MillisToShift(max<uint32_t>(1, diffIntMillis / diffOrder));
+}
+
+void ZProbe::ResetDifferential() noexcept
+{
+	AtomicCriticalSectionLocker lock;
+	diffPrimeTicks = DiffNotPrimed;
+	diffHoldTicks = 0;
+	diffBlankTicks = 0;
+	diffDelta = 0;								// separate statements: reading back an assignment to a volatile is deprecated
+	diffFiltered = 0;
+	diffTrigger = 0;
+	diffProbing = false;
+	diffArmedBaseline = 0;
+	diffFastQ = diffSlowQ = 0;
+	for (int32_t& v : diffLpQ) { v = 0; }
+	for (int32_t& v : diffHpQ) { v = 0; }
+}
+
+// Capture the baseline and start the blanking window. Called from SetProbing, i.e. at standstill immediately before the probing move.
+void ZProbe::ArmDifferential(bool isProbing) noexcept
+{
+	AtomicCriticalSectionLocker lock;
+	diffProbing = isProbing;
+	diffArmedBaseline = diffFastQ >> DiffFracBits;
+	diffBlankTicks = (isProbing) ? diffBlankMillis : 0;
+	diffHoldTicks = 0;
+	diffTrigger = 0;
+}
+
+// The detector. Called from the 1kHz tick ISR, so: integer only (the tick must not use floating point), O(1), and it publishes
+// only single naturally-atomic words. Every cycle spent here is step-interrupt latency, once per millisecond, during printing too.
+void ZProbe::ProcessDifferentialSample(int32_t raw) noexcept
+{
+	const int32_t x = raw << DiffFracBits;
+
+	if (diffPrimeTicks == DiffNotPrimed)
+	{
+		diffFastQ = diffSlowQ = x;
+		for (int32_t& v : diffLpQ) { v = (diffSource == 1) ? x : 0; }
+		diffHpQ[0] = x;							// stage 0 of the highpass sees DC, later stages see ~0
+		for (size_t i = 1; i < MaxDiffOrder; ++i) { diffHpQ[i] = 0; }
+		diffPrimeTicks = (uint16_t)min<uint32_t>(4u << diffSlowShift, 8000);		// settle for 4 time constants before we can trigger
+		diffHoldTicks = diffBlankTicks = 0;
+		diffTrigger = 0;
+		return;
+	}
+
+	diffFastQ += (x - diffFastQ) >> diffFastShift;
+	diffSlowQ += (x - diffSlowQ) >> diffSlowShift;
+	const int32_t deltaQ = diffFastQ - diffSlowQ;
+
+	// A bandpass built from two cascades: diffOrder lowpass poles at E/order set the top skirt, diffHpOrder highpass poles at W set the bottom.
+	// L1 lowpasses first so the baseline tracker sees the unsmoothed signal and stays free to follow drift; L0 highpasses first, which puts the
+	// baseline through the lowpass too and delays it. They are not equivalent in practice even though they would be for ideal LTI blocks.
+	int32_t v = diffFastQ;
+	if (diffSource == 1)
+	{
+		for (unsigned int k = 0; k < diffOrder; ++k)   { diffLpQ[k] += (v - diffLpQ[k]) >> diffIntShift; v = diffLpQ[k]; }
+		for (unsigned int k = 0; k < diffHpOrder; ++k) { diffHpQ[k] += (v - diffHpQ[k]) >> diffSlowShift; v -= diffHpQ[k]; }
+	}
+	else
+	{
+		for (unsigned int k = 0; k < diffHpOrder; ++k) { diffHpQ[k] += (v - diffHpQ[k]) >> diffSlowShift; v -= diffHpQ[k]; }
+		for (unsigned int k = 0; k < diffOrder; ++k)   { diffLpQ[k] += (v - diffLpQ[k]) >> diffIntShift; v = diffLpQ[k]; }
+	}
+
+	diffDelta = (int16_t)max<int32_t>(-32000, min<int32_t>(32000, deltaQ >> DiffFracBits));
+	diffFiltered = (int16_t)max<int32_t>(-32000, min<int32_t>(32000, v >> DiffFracBits));
+
+	if (diffPrimeTicks != 0) { --diffPrimeTicks; return; }
+	if (diffBlankTicks != 0) { --diffBlankTicks; return; }							// ride out the probing move's acceleration ramp
+
+	const int32_t f = diffFiltered;
+	int8_t sign = 0;
+	if (diffDirection != 2 && f >= targetAdcValue) { sign = 1; }
+	else if (diffDirection != 1 && f <= -targetAdcValue) { sign = -1; }
+
+	if (sign == 0 && diffProbing)
+	{
+		// Absolute backstop against the armed baseline, so a contact too slow for the bandpass is still caught.
+		// This makes the differential type a superset of the plain analog one rather than a trade.
+		const int32_t dev = (diffFastQ >> DiffFracBits) - diffArmedBaseline;
+		if (diffDirection != 2 && dev >= targetAdcValue) { sign = 1; }
+		else if (diffDirection != 1 && dev <= -targetAdcValue) { sign = -1; }
+	}
+
+	if (sign != 0)
+	{
+		diffHoldTicks = diffHoldMillis;												// retriggerable monostable
+		diffTrigger = sign;
+	}
+	else if (diffHoldTicks != 0 && --diffHoldTicks == 0)
+	{
+		diffTrigger = 0;
+	}
+}
+
+// Parse the differential-probe parameters of M558. Returns error only if the configuration is self-contradictory.
+GCodeResult ZProbe::ConfigureDifferential(GCodeBuffer& gb, bool& seen) THROWS(GCodeException)
+{
+	// Only the filter shape (V W E O J L) invalidates the accumulators. Direction, hold and blanking are
+	// decisions made on top of the filter output, so changing them must NOT re-prime - a macro that flips
+	// D between probe points would otherwise be blind for ~4*W after every switch.
+	bool changed = false, filterChanged = false;
+	if (gb.Seen('V')) { diffFastMillis = (uint16_t)gb.GetLimitedUIValue('V', 1, MaxDiffTimeConstantMillis + 1); filterChanged = true; }
+	if (gb.Seen('W')) { diffSlowMillis = (uint16_t)gb.GetLimitedUIValue('W', 1, MaxDiffTimeConstantMillis + 1); filterChanged = true; }
+	if (gb.Seen('E')) { diffIntMillis = (uint16_t)gb.GetLimitedUIValue('E', 1, MaxDiffTimeConstantMillis + 1); filterChanged = true; }
+	if (gb.Seen('O')) { diffOrder = (uint8_t)gb.GetLimitedUIValue('O', 1, MaxDiffOrder + 1); filterChanged = true; }
+	if (gb.Seen('J')) { diffHpOrder = (uint8_t)gb.GetLimitedUIValue('J', 1, MaxDiffOrder + 1); filterChanged = true; }
+	if (gb.Seen('L')) { diffSource = (uint8_t)gb.GetLimitedUIValue('L', 0, 2); filterChanged = true; }
+	if (gb.Seen('D')) { diffDirection = (uint8_t)gb.GetLimitedUIValue('D', 0, 3); changed = true; }
+	if (gb.Seen('Q')) { diffHoldMillis = (uint16_t)gb.GetLimitedUIValue('Q', 1, 5001); changed = true; }
+	if (gb.Seen('U')) { diffBlankMillis = (uint16_t)gb.GetLimitedUIValue('U', 0, 5001); changed = true; }
+
+	if (filterChanged)
+	{
+		if (diffSlowMillis <= diffFastMillis)
+		{
+			return GCodeResult::error;												// otherwise the passband is empty and it can never trigger
+		}
+		RecalcDifferentialShifts();
+		ResetDifferential();														// time constants changed, so the filter state is meaningless
+	}
+	if (changed || filterChanged)
+	{
+		seen = true;
+	}
+	return GCodeResult::ok;
+}
+
+void ZProbe::AppendDifferentialReport(const StringRef& reply) const noexcept
+{
+	reply.catf(", differential: threshold %" PRIi32 ", filter %s, V%ums W%ums E%ums O%u (%udB/oct) J%u (%udB/oct), D%u, Q%ums, U%ums, live delta %d filtered %d trig %d",
+					targetAdcValue,
+					(diffSource == 1) ? "raw" : "delta",
+					diffFastMillis, diffSlowMillis, diffIntMillis, diffOrder, 6u * diffOrder,
+					diffHpOrder, 6u * diffHpOrder,
+					diffDirection, diffHoldMillis, diffBlankMillis,
+					(int)diffDelta, (int)diffFiltered, (int)diffTrigger);
+}
+
+#endif
 
 // Default implementation of SendProgram, overridden in some classes
 GCodeResult ZProbe::SendProgram(const uint32_t zProbeProgram[], size_t len, const StringRef& reply) noexcept

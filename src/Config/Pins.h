@@ -363,6 +363,12 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 # define SUPPORT_SCANNING_PROBES		(SUPPORT_CAN_EXPANSION)
 #endif
 
+#ifndef SUPPORT_DIFFERENTIAL_PROBES
+// Differential Z probes trigger on the change in the reading rather than its absolute level. They need a local analog input sampled at a fixed
+// rate from the tick ISR, so they are local-only, but they need no CAN and work on any board that has an analog Z probe input.
+# define SUPPORT_DIFFERENTIAL_PROBES	1
+#endif
+
 #ifndef SUPPORT_MODBUS_RTU
 # define SUPPORT_MODBUS_RTU				0
 #endif

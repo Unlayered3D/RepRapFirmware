@@ -41,7 +41,7 @@ enum class KinematicsType : uint8_t
 	sixAxisDelta,		// reserved for @tkln, see https://forum.duet3d.com/post/314950
 	coreXBYC,			// for now for testing because i am bad with dh
 	coreXBYC2,			// for testing the different mappings
-	coreXBYC3,			// more testing yay
+	coreXBYCTilt,		// K17: coreXBYC2 with B measured as tilt from vertical (B0 = nozzle straight down, B90 = straight out)
 
 	dhPrinter,			// using for any printer created from dh parameters.
 

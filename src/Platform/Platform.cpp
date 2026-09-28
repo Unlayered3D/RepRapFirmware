@@ -1261,6 +1261,10 @@ void Platform::InitialiseInterrupts() noexcept
 	// Tick interrupt for ADC conversions
 	tickState = 0;
 	currentFilterNumber = 0;
+	zProbeTickReads = 0;
+	zProbeTickChanges = 0;
+	zProbeTickStatsStartTime = millis();
+	lastZProbeTickReading = -1;								// a value GetRawReading can never return, so the first read always counts as a change
 }
 
 //*************************************************************************************************
@@ -1389,6 +1393,27 @@ void Platform::Diagnostics(unsigned int part, const StringRef& reply) noexcept
 		reply.lcatf("12V rail voltage: min %.1f, current %.1f, max %.1f, under voltage events: %" PRIu32,
 			(double)AdcReadingToV12Voltage(lowestV12), (double)AdcReadingToV12Voltage(currentV12), (double)AdcReadingToV12Voltage(highestV12), numV12UnderVoltageEvents.load());
 #endif
+
+#if SAME5x
+		// Show the ADC conversion counters. These are cumulative, so difference them across two M122 calls to get the whole-sequence rate.
+		{
+			uint32_t convsStarted, convsCompleted, convTimeouts, convErrs;
+			AnalogIn::GetDebugInfo(convsStarted, convsCompleted, convTimeouts, convErrs);
+			reply.lcatf("ADC conversions started %" PRIu32 ", completed %" PRIu32 ", timeouts %" PRIu32 ", errors %" PRIu32,
+							convsStarted, convsCompleted, convTimeouts, convErrs);
+		}
+#endif
+
+		// Show how often the Z probe value actually changed, versus how often the tick read it. 'changed' divided by the interval is the true
+		// per-channel ADC rate, which is what a change-detecting probe can resolve; 'reads' confirms the tick itself is not being starved.
+		{
+			const uint32_t now = millis();
+			reply.lcatf("Z probe tick reads %" PRIu32 ", changed %" PRIu32 ", over %" PRIu32 "ms", zProbeTickReads, zProbeTickChanges, now - zProbeTickStatsStartTime);
+			zProbeTickReads = 0;
+			zProbeTickChanges = 0;
+			zProbeTickStatsStartTime = now;
+		}
+
 		ResetVoltageMonitors();
 		break;
 
@@ -4509,7 +4534,8 @@ void Platform::Tick() noexcept
 	}
 #endif
 
-	const ZProbe &_ecv_from currentZProbe = endstops.GetDefaultZProbeFromISR();
+	ZProbe &_ecv_from currentZProbe = endstops.GetDefaultZProbeFromISR();
+	currentZProbe.TakeTickSample();				// no-op unless this is a differential probe
 	switch (tickState)
 	{
 	case 1:
@@ -4532,20 +4558,20 @@ void Platform::Tick() noexcept
 			// so on alternate ticks we read it and switch the emitter
 			if (currentZProbe.GetProbeType() != ZProbeType::dumbModulated)
 			{
-				const_cast<ZProbeAveragingFilter&>((tickState == 1) ? zProbeOnFilter : zProbeOffFilter).ProcessReading(currentZProbe.GetRawReading());
+				const_cast<ZProbeAveragingFilter&>((tickState == 1) ? zProbeOnFilter : zProbeOffFilter).ProcessReading(RecordZProbeTickReading(currentZProbe.GetRawReading()));
 			}
 			++tickState;
 		}
 		break;
 
 	case 2:
-		const_cast<ZProbeAveragingFilter&>(zProbeOnFilter).ProcessReading(currentZProbe.GetRawReading());
+		const_cast<ZProbeAveragingFilter&>(zProbeOnFilter).ProcessReading(RecordZProbeTickReading(currentZProbe.GetRawReading()));
 		currentZProbe.SetIREmitter(false);
 		++tickState;
 		break;
 
 	case 4:			// last conversion started was the Z probe, with IR LED off if modulation is enabled
-		const_cast<ZProbeAveragingFilter&>(zProbeOffFilter).ProcessReading(currentZProbe.GetRawReading());
+		const_cast<ZProbeAveragingFilter&>(zProbeOffFilter).ProcessReading(RecordZProbeTickReading(currentZProbe.GetRawReading()));
 		currentZProbe.SetIREmitter(true);
 		tickState = 1;
 		break;

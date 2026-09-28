@@ -141,6 +141,24 @@ constexpr float DefaultZProbeTolerance = 0.03;			// How close the Z probe trigge
 constexpr uint8_t DefaultZProbeTaps = 1;				// The maximum number of times we probe each point
 constexpr int32_t DefaultZProbeADValue = 500;			// Default trigger threshold
 
+#if SUPPORT_DIFFERENTIAL_PROBES
+// Differential Z probe (M558 P12). The detector is a bandpass: a slow EMA tracks the baseline, a fast EMA follows the signal, and their
+// difference is passed through a cascade of identical lowpass poles. Time constants are in milliseconds and the tick samples at 1kHz.
+constexpr int32_t DefaultDiffThreshold = 120;			// Counts of change from the tracked baseline. Absolute-mode 500 would mean "never trigger"
+constexpr int32_t MaxDiffThreshold = 1000;
+constexpr uint32_t DefaultDiffFastMillis = 4;			// Signal EMA. Floor is the ADC refresh, ~1.3ms
+constexpr uint32_t DefaultDiffSlowMillis = 256;			// Baseline EMA. Rejects the B-swing strain relaxation (~17 counts/s worst case)
+constexpr uint32_t DefaultDiffIntMillis = 60;			// Total group delay of the lowpass cascade
+constexpr uint32_t DefaultDiffHoldMillis = 100;			// Monostable, must exceed the worst step-ISR poll gap
+constexpr uint32_t DefaultDiffBlankMillis = 50;			// Suppress triggering over the probing move's acceleration ramp
+constexpr uint8_t DefaultDiffOrder = 2;					// Lowpass poles, 12dB/octave
+constexpr uint8_t MaxDiffOrder = 4;
+constexpr uint8_t DefaultDiffDirection = 1;				// 0 = either, 1 = rising only, 2 = falling only
+constexpr uint32_t MaxDiffTimeConstantMillis = 4096;
+constexpr uint16_t DiffNotPrimed = 0xFFFF;
+constexpr unsigned int DiffFracBits = 12;				// Q12 fixed point. Integer shifts alone have a dead zone of one whole count
+#endif
+
 constexpr float SILLY_Z_VALUE = -9999.0;				// Millimetres
 
 // String lengths. Try not to have too many different ones, because each one causes an instantiation of the String template

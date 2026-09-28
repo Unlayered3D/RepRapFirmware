@@ -333,7 +333,7 @@ void Kinematics::LimitSpeedAndAcceleration(DDA& dda, const float *_ecv_array nor
 #if SUPPORT_FIVEAXIS
 	case KinematicsType::coreXBYC:
 	case KinematicsType::coreXBYC2:
-	case KinematicsType::coreXBYC3:
+	case KinematicsType::coreXBYCTilt:
 		return new FiveAxisKinematics(k);
 #endif
 	}
