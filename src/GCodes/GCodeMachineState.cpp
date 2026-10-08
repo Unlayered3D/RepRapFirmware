@@ -8,6 +8,7 @@
 #include "GCodeMachineState.h"
 #include <Platform/RepRap.h>
 #include <Storage/MassStorage.h>
+#include <Platform/PiezoLog.h>
 
 #include <climits>
 
@@ -304,6 +305,9 @@ void GCodeMachineState::CopyStateFrom(const GCodeMachineState& other) noexcept
 // Set the error message and associated state
 void GCodeMachineState::SetError(const char *_ecv_array msg, int parameter) noexcept
 {
+#if SUPPORT_PIEZO_LOG
+	PiezoLog::NoteError(msg);				// Unlayered: snapshots the probe log after a probe failure
+#endif
 	if (stateMachineResult != GCodeResult::error)
 	{
 		errorMessage = GCodeException(msg, parameter);

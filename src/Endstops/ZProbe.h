@@ -98,6 +98,8 @@ public:
 	int32_t GetDiffDelta() const noexcept { return diffDelta; }
 	int32_t GetDiffFiltered() const noexcept { return diffFiltered; }
 	int32_t GetDiffTrigger() const noexcept { return diffTrigger; }
+	uint16_t GetDiffLogFlags() const noexcept;					// tick ISR only: the PiezoLog flag bits for the current detector state
+	int32_t GetDiffLevel() const noexcept { return diffFastQ >> DiffFracBits; }	// the fast-smoothed reading, i.e. what ArmDifferential captures as the baseline
 	GCodeResult ConfigureDifferential(GCodeBuffer& gb, bool& seen) THROWS(GCodeException);
 	void AppendDifferentialReport(const StringRef& reply) const noexcept;
 #else

@@ -38,6 +38,7 @@
 #include "Event.h"
 #include <Version.h>
 #include "Logger.h"
+#include "PiezoLog.h"
 #include "Tasks.h"
 #include <Cache.h>
 #include <SPI/SharedSpiDevice.h>
@@ -802,6 +803,9 @@ void Platform::Spin() noexcept
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
 	MassStorage::Spin();
+#endif
+#if SUPPORT_PIEZO_LOG
+	PiezoLog::Spin();
 #endif
 
 	// Check for generic debug
@@ -4536,6 +4540,9 @@ void Platform::Tick() noexcept
 
 	ZProbe &_ecv_from currentZProbe = endstops.GetDefaultZProbeFromISR();
 	currentZProbe.TakeTickSample();				// no-op unless this is a differential probe
+#if SUPPORT_PIEZO_LOG
+	PiezoLog::TickSample(currentZProbe);		// Unlayered: 30 s rolling probe log for support
+#endif
 	switch (tickState)
 	{
 	case 1:

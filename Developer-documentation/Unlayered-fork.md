@@ -188,6 +188,32 @@ is busy syncing the previous one; the per-chunk ACK is the only flow control. Fa
 (one sector window per volume) is what makes a reader see the writer's synced sectors without
 stale per-file buffers.
 
+### 8. Piezo support log — `M1770`
+
+`src/Platform/PiezoLog.{h,cpp}`, guarded by `SUPPORT_PIEZO_LOG` (= `HAS_MASS_STORAGE`). A continuous
+30 s rolling log of the Z probe signal at 1 kHz in `0:/logs/piezo/ring.bin`, frozen into
+`snap-NNNN.bin` (+ `.txt` sidecar) automatically after any probe failure, at boot (the previous
+boot's ring, i.e. the 30 s before a crash), and on `M1770 S"reason"`. The slicer's "Send printer
+logs to Unlayered" collects it. **Format, the support-bundle contract and the website API are in
+[Piezo-support-log.md](Piezo-support-log.md); the decoder is `Tools/piezolog/decode_piezolog.py`.**
+
+It is on the SD card and not in RAM because a Mini 5+ has ~8 KB that is never used and 30 s is
+60 KB. The tick ISR fills three 512-byte blocks; `Platform::Spin` writes them in place (append-mode
+handle, so no `FileWriteBuffer` is held). Snapshots rename the file, so they cost no copy. Hooks in
+upstream files, one line each: `Platform::Tick` (after `TakeTickSample`), `Platform::Spin`,
+`LocalZProbe::SetProbing`, `GCodeMachineState::SetError` (string match on the probe-failure
+messages), and the `M1770` case in `GCodes2.cpp`.
+
+### Fix: a refused G0/G1 no longer moves the head toward its target
+
+Since `+unlayered.19` (taken from `.18` without the rest of that build). Upstream `GCodes::DoStraightMove`
+writes the new target into `currentUserPosition` and `raw.coords` before the limit/keepout checks, and
+a refused move throws without putting them back. The next move takes `raw.coords` as its start, so a
+segmented move interpolated from the refused target and the head physically drove most of the way
+toward it (seen on .80 2026-10-03: refused `G1 X-200`, then `G1 X0` drove out toward X-110 and back).
+`RefusedMoveRestorer`, a local RAII struct in `DoStraightMove`, restores both on any exception thrown
+after the initial position is captured (`std::uncaught_exceptions()`, hence `#include <exception>`).
+
 ## Build system
 
 Makefiles are the source of truth. `.cproject`/`.project`/`.settings` are still tracked for
@@ -225,7 +251,7 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
 **Fork-owned new files** (11) — no conflict risk:
 `Comms/MMU2S/{MMU2S.h,MMU2S.cpp,MMU2SProtocol.h}` ·
 `Movement/Kinematics/FiveAxisKinematics.{h,cpp}` · `Platform/PrinterStatistics.{h,cpp}` ·
-`Comms/PanelOtaUpdater.{h,cpp}` · `Comms/PanelPrintStream.{h,cpp}`
+`Comms/PanelOtaUpdater.{h,cpp}` · `Comms/PanelPrintStream.{h,cpp}` · `Platform/PiezoLog.{h,cpp}`
 
 **Upstream files touched, and why:**
 
@@ -244,6 +270,8 @@ git diff --diff-filter=M --name-only ed7e034c7 HEAD -- src/ \
 | Panel push | `Comms/FirmwareUpdater.{h,cpp}`, `Platform/Platform.{h,cpp}`, `GCodes/GCodes.{h,cpp}`, `GCodes4.cpp`, `Config/{Pins.h,Pins_Duet3Mini.h,Configuration.h}` | `M997 S5` module, `PanelOtaUpdater` ownership, `IsFlashingAuxDevice()` |
 | Panel print | `GCodes/GCodeInput.{h,cpp}`, `GCodes/GCodes.{h,cpp}`, `GCodes2.cpp`, `Storage/FileInfoParser.{h,cpp}`, `PrintMonitor/PrintMonitor.{h,cpp}`, `Platform/Platform.{h,cpp}`, `Config/{Pins.h,Pins_Duet3Mini.h}` | `M1760–M1762` dispatch, `ReadFromFile(maxBytes)` + `waiting`, `ReadableLength()`, `ReparseFileInfo()`, `PanelPrintStream` ownership, 2 kB aux0 RX ring |
 | Probing | `GCodes/StraightProbeSettings.h` | Probing changes for the five-axis machines |
+| Piezo log | `Platform/Platform.cpp`, `Endstops/LocalZProbe.cpp`, `Endstops/ZProbe.{h,cpp}`, `GCodes/GCodeMachineState.cpp`, `GCodes2.cpp` | One-line `PiezoLog` hooks (tick sample, spin, probing flag, probe-failure snapshot), `M1770`, detector flag accessors |
+| Refused-move fix | `GCodes/GCodes.cpp` | `RefusedMoveRestorer` in `DoStraightMove` |
 | Identity | `Version.h` | `+unlayered.1` suffix so local builds are identifiable |
 | Misc | `RepRapFirmware.h` | Forward declarations |
 

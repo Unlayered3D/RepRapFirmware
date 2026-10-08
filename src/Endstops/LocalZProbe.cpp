@@ -10,6 +10,7 @@
 #include <GCodes/GCodeBuffer/GCodeBuffer.h>
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
+#include <Platform/PiezoLog.h>
 
 #include <AnalogIn.h>
 
@@ -142,6 +143,9 @@ uint16_t LocalZProbe::GetUnscaledAnalogReading() const noexcept
 
 bool LocalZProbe::SetProbing(bool isProbing) noexcept
 {
+#if SUPPORT_PIEZO_LOG
+	PiezoLog::NoteProbing(isProbing);
+#endif
 #if SUPPORT_DIFFERENTIAL_PROBES
 	if (type == ZProbeType::differentialAnalog)
 	{

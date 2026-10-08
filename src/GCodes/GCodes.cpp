@@ -24,6 +24,7 @@
  ****************************************************************************************************/
 
 #include "GCodes.h"
+#include <exception>							// std::uncaught_exceptions, for RefusedMoveRestorer
 
 #include "GCodeBuffer/GCodeBuffer.h"
 #include "GCodeBuffer/ExpressionParser.h"
@@ -2358,6 +2359,27 @@ bool GCodes::DoStraightMove(GCodeBuffer& gb, bool isCoordinated) THROWS(GCodeExc
 	// Save the current position, we need it possibly later
 	float initialUserPosition[MaxAxes];
 	memcpyf(initialUserPosition, ms.currentUserPosition, numVisibleAxes);
+
+	// Unlayered: if this move is refused (any exception from here on - limits, keepout, a bad
+	// expression), put the position back where it was. Upstream leaves currentUserPosition and raw.coords at the
+	// refused target, and the NEXT move takes raw.coords as its start: a segmented move then interpolates from the
+	// refused target, so the head physically travels most of the way to the position that was just refused
+	// (seen on .80 2026-10-03: refused G1 X-200, then G1 X0 drove the head out toward X-110 and back).
+	struct RefusedMoveRestorer
+	{
+		MovementState& ms;
+		const float *_ecv_array userPos;
+		size_t numAxes;
+		int exceptionsAtStart;
+		~RefusedMoveRestorer()
+		{
+			if (std::uncaught_exceptions() > exceptionsAtStart)
+			{
+				memcpyf(ms.raw.coords, ms.initialCoords, numAxes);
+				memcpyf(ms.currentUserPosition, userPos, numAxes);
+			}
+		}
+	} refusedMoveRestorer { ms, initialUserPosition, numVisibleAxes, std::uncaught_exceptions() };
 
 	AxesBitmap axesMentioned;
 	for (size_t axis = 0; axis < numVisibleAxes; axis++)

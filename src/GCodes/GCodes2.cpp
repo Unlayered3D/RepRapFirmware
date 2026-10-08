@@ -30,6 +30,7 @@
 #include <Hardware/ExceptionHandlers.h>
 #include <Networking/Network.h>
 #include <Version.h>
+#include <Platform/PiezoLog.h>
 
 #if SUPPORT_IOBITS
 # include <Platform/PortControl.h>
@@ -4837,6 +4838,12 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			case 1761:	// Unlayered: one chunk of that file follows this line as raw bytes
 			case 1762:	// Unlayered: finish, abort or report the stream
 				result = HandlePanelPrintCommand(gb, reply);
+				break;
+#endif
+
+#if SUPPORT_PIEZO_LOG
+			case 1770:	// Unlayered: piezo probe log - report, enable/disable, snapshot
+				result = PiezoLog::Configure(gb, reply);
 				break;
 #endif
 

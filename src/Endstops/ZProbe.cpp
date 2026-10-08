@@ -777,6 +777,19 @@ void ZProbe::ProcessDifferentialSample(int32_t raw) noexcept
 	}
 }
 
+// The detector state as PiezoLog sample flags. Tick ISR only, so it reads the ISR-owned counters without locking.
+uint16_t ZProbe::GetDiffLogFlags() const noexcept
+{
+	uint16_t f = 0;
+	const int8_t t = diffTrigger;
+	if (t != 0) { f |= 1u << 10; }
+	if (t < 0) { f |= 1u << 11; }
+	if (diffProbing) { f |= 1u << 12; }
+	if (diffBlankTicks != 0) { f |= 1u << 13; }
+	if (diffPrimeTicks != 0) { f |= 1u << 14; }
+	return f;
+}
+
 // Parse the differential-probe parameters of M558. Returns error only if the configuration is self-contradictory.
 GCodeResult ZProbe::ConfigureDifferential(GCodeBuffer& gb, bool& seen) THROWS(GCodeException)
 {
