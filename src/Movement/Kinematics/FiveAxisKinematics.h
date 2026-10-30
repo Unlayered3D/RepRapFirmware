@@ -17,11 +17,12 @@
 
 class FiveAxisKinematics: public ZLeadscrewKinematics {
 public:
+	static Kinematics *_ecv_from _ecv_null Create(const char *_ecv_array _ecv_null name, int legacyNumber) noexcept;
+
+public:
 	FiveAxisKinematics(KinematicsType k) noexcept;
 
 	// Overridden base class functions. See Kinematics.h for descriptions.
-	const char* _ecv_array GetName(bool forStatusReport) const noexcept
-			override;
 	bool Configure(unsigned int mCode, GCodeBuffer &gb, const StringRef &reply,
 			bool &error) THROWS(GCodeException) override;
 	MovementError CartesianToMotorSteps(const float machinePos[],
@@ -56,7 +57,7 @@ private:
 	// down and B90 = straight out, which is B-90 and B0 in the K16 frame. Only the trig sees the shift:
 	// the linear B->motor mapping is unchanged, and because the arm offsets stay referenced to the same
 	// physical pose, XYZ mean exactly what they mean under K16 - only B values and B limits move by 90.
-	float BTrigOffset() const noexcept { return (GetKinematicsType() == KinematicsType::coreXBYCTilt) ? -90.0f : 0.0f; }
+	float BTrigOffset() const noexcept { return (GetLegacyType() == KinematicsType::coreXBYCTilt) ? -90.0f : 0.0f; }
 	// Primary parameters
 	FixedMatrix<float, MaxAxes, MaxAxes> inverseMatrix;	// maps coordinates to motor positions
 

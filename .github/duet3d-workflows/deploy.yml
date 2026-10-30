@@ -27,13 +27,24 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           resolve() {
-            if git ls-remote --exit-code --heads "https://github.com/Duet3D/$1.git" "$REF" >/dev/null 2>&1; then
-              echo "$1: $REF"
-              echo "$1=$REF" >> "$GITHUB_OUTPUT"
-            else
-              echo "$1: $REF not found, using $2"
-              echo "$1=$2" >> "$GITHUB_OUTPUT"
-            fi
+            # Exit code 2 means the branch is genuinely absent, anything else is a failed lookup. Falling back
+            # on those would build against the wrong sources and upload them under the name of this branch
+            status=0
+            git ls-remote --exit-code --heads "https://github.com/Duet3D/$1.git" "$REF" >/dev/null 2>&1 || status=$?
+            case $status in
+              0)
+                echo "$1: $REF"
+                echo "$1=$REF" >> "$GITHUB_OUTPUT"
+                ;;
+              2)
+                echo "$1: $REF not found, using $2"
+                echo "$1=$2" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "Could not reach $1 to look up $REF" >&2
+                exit 1
+                ;;
+            esac
           }
           resolve CANlib 3.7-dev
           resolve CoreN2G 3.7-dev
@@ -43,7 +54,7 @@ jobs:
           resolve LibMbedTls master
           resolve Qfplib-M0-full 3.7-dev
           resolve RRFLibraries 3.7-dev
-          resolve WiFiSocketServerRTOS tls_support
+          resolve WiFiSocketServerRTOS master
 
       - name: "Check out CANlib"
         uses: actions/checkout@v6
@@ -130,9 +141,27 @@ jobs:
         run: |
           if [ -n "$(echo "$VERSION" | tr -d '[:space:]')" ]; then
             sed -i "s/# define MAIN_VERSION.\+/# define MAIN_VERSION \"$VERSION\"/g" ./RepRapFirmware/src/Version.h
+            sed -i "s/#define VERSION\s.\+/#define VERSION \"$VERSION\"/g" ./Duet3Expansion/src/Version.h
+            grep -q "\"$VERSION\"" ./RepRapFirmware/src/Version.h && grep -q "\"$VERSION\"" ./Duet3Expansion/src/Version.h
           else
             echo "No version supplied, leaving Version.h unchanged"
           fi
+          echo "Deploying $(sed -n 's/^# define MAIN_VERSION\s\+"\(.\+\)"$/\1/p' ./RepRapFirmware/src/Version.h)"
+
+      # The source repositories and the third-party code vendored inside them, as a CycloneDX
+      # software BOM, see .github/scripts/make-sbom.sh and .github/sbom-components.json
+      - name: "Generate software BOM"
+        run: |
+          mkdir -p sbom
+          version=$(sed -n 's/^# define MAIN_VERSION\s\+"\(.\+\)"$/\1/p' ./RepRapFirmware/src/Version.h)
+          ./RepRapFirmware/.github/scripts/make-sbom.sh . "$version" "$ARM_TOOLCHAIN" > "sbom/Duet3Firmware-$version-sbom.json"
+          jq . "sbom/Duet3Firmware-$version-sbom.json"
+
+      - name: "Attach software BOM"
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: ./sbom/Duet3Firmware-*-sbom.json
 
       - name: "Set up ARM GCC"
         run: |
@@ -160,20 +189,27 @@ jobs:
           rm -f ./upload/Duet3Firmware_Mini5plus.bin
           cp ./RepRapFirmware/*/Duet3Firmware_*.map ./Duet3Expansion/*/Duet3Firmware_*.map ./upload/maps/
 
+      - name: "Bundle binaries and symbols"
+        run: |
+          mkdir bundles
+          (cd ./upload && zip -qj "$GITHUB_WORKSPACE/bundles/Duet3Firmware.zip" *.bin *.uf2)
+          (cd ./upload/maps && zip -qj "$GITHUB_WORKSPACE/bundles/Duet3Firmware-symbols.zip" *.map)
+          unzip -l ./bundles/Duet3Firmware.zip
+          unzip -l ./bundles/Duet3Firmware-symbols.zip
+
       - name: "Attach binaries"
         uses: actions/upload-artifact@v7
         with:
           name: binaries
-          path: |
-            ./upload/*.bin
-            ./upload/*.uf2
+          path: ./bundles/Duet3Firmware.zip
+          compression-level: 0
 
       - name: "Attach symbols"
         uses: actions/upload-artifact@v7
         with:
           name: symbols
-          path: |
-            ./upload/maps/*.map
+          path: ./bundles/Duet3Firmware-symbols.zip
+          compression-level: 0
 
       - name: "Upload files to testing directory"
         uses: Creepios/sftp-action@v1.0.5

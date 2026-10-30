@@ -222,7 +222,6 @@ TemperatureSensor *_ecv_from _ecv_null TemperatureSensor::Create(unsigned int se
 	}
 	else
 #endif
-
 	{
 		ts = nullptr;
 		for (const SensorTypeDescriptor *_ecv_null desc = SensorTypeDescriptor::GetRoot(); desc != nullptr; desc = desc->GetNext())

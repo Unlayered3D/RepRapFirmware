@@ -15,7 +15,11 @@
 #include <General/FreelistManager.h>
 
 #if SUPPORT_TMC22xx && HAS_STALL_DETECT
-# include <Movement/StepperDrivers/TMC22xx.h>
+# if TGBTC
+#  include <TMC22xx.h>
+# else
+#  include <Movement/StepperDrivers/TMC22xx.h>
+# endif
 #endif
 
 class AxisDriversConfig;
@@ -33,7 +37,7 @@ public:
 	virtual EndstopHitDetails CheckTriggered() noexcept = 0;
 	virtual bool Acknowledge(EndstopHitDetails what) noexcept = 0;
 #if SUPPORT_CAN_EXPANSION
-	virtual void HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled, uint16_t when) noexcept { }		// overridden for stall endstops
+	virtual void HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled, uint32_t when) noexcept { }		// overridden for stall endstops
 #endif
 	EndstopOrZProbe *_ecv_from _ecv_null GetNext() const noexcept { return next; }
 	void SetNext(EndstopOrZProbe *_ecv_from _ecv_null e) noexcept { next = e; }
@@ -52,7 +56,7 @@ protected:
 #endif
 
 #if SUPPORT_CAN_EXPANSION
-	uint16_t whenTriggered;
+	uint32_t whenTriggered;
 	bool haveTriggerTime = false;
 #endif
 
@@ -84,7 +88,11 @@ inline void EndstopOrZProbe::SetDriversNotStalled(LocalDriversBitmap drivers) no
 // Return which drivers out of the set of interest are stalled
 inline LocalDriversBitmap EndstopOrZProbe::GetStalledDrivers(LocalDriversBitmap driversOfInterest) noexcept
 {
+#if SUPPORT_TMC22xx
+	return (stalledDrivers & driversOfInterest) | SmartDrivers::GetStalledDrivers(driversOfInterest);
+#else
 	return stalledDrivers & driversOfInterest;
+#endif
 }
 
 # elif SUPPORT_TMC22xx
@@ -110,7 +118,7 @@ public:
 
 #if SUPPORT_CAN_EXPANSION
 	// Process a remote endstop input change that relates to this endstop
-	virtual void HandleRemoteInputChange(CanAddress src, uint8_t handleMinor, uint16_t when, bool state) noexcept { }
+	virtual void HandleRemoteInputChange(CanAddress src, uint8_t handleMinor, uint32_t when, bool state) noexcept { }
 	virtual void DeleteRemoteStallEndstops() noexcept { }		// overridden in class StallEndtop
 #endif
 

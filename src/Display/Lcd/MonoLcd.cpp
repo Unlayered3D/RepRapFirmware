@@ -13,7 +13,11 @@
 
 MonoLcd::MonoLcd(PixelNumber nr, PixelNumber nc, const LcdFont * const fnts[], size_t nFonts, SpiMode mode) noexcept
 	: Lcd(nr, nc, fnts, nFonts),
-	  device(Platform::GetSharedSpiDevice(), LcdSpiClockFrequency, mode, NoPin, true)
+#if TGBTC
+ 	device(Platform::GetSharedSpiDevice(LcdSpiChannel), LcdSpiClockFrequency, mode, NoPin, true)
+#else
+ 	device(Platform::GetSharedSpiDevice(), LcdSpiClockFrequency, mode, NoPin, true)
+#endif
 {
 	imageSize = nr * ((nc + 7)/8);
 	image = new uint8_t[imageSize];

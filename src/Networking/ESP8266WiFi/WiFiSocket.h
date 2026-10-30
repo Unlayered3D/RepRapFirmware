@@ -53,7 +53,7 @@ private:
 	};
 
 	WiFiInterface *GetInterface() const noexcept;
-	void ReceiveData(uint16_t bytesAvailable) noexcept;
+	void ReceiveData(int32_t bytesAvailable) noexcept;
 	void DiscardReceivedData() noexcept;
 
 	NetworkBuffer *_ecv_null receivedData;				// List of buffers holding received data

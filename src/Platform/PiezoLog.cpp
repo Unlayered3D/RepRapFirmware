@@ -98,7 +98,7 @@ namespace PiezoLog
 
 	static bool IsLoggedType(ZProbeType t) noexcept
 	{
-		return t == ZProbeType::analog || t == ZProbeType::alternateAnalog
+		return t == ZProbeType::analog || t == ZProbeType::alternateAnalog_obsolete
 #if SUPPORT_DIFFERENTIAL_PROBES
 			|| t == ZProbeType::differentialAnalog
 #endif

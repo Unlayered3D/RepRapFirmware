@@ -16,6 +16,10 @@
 #if HAS_MASS_STORAGE
 # include <Libraries/Fatfs/diskio.h>
 # include <Movement/StepTimer.h>
+# if HAS_WRITER_TASK
+#  include "TaskPriorities.h"
+#  include "AppNotifyIndices.h"
+# endif
 #endif
 
 #if HAS_SBC_INTERFACE
@@ -37,14 +41,15 @@ void FileStore::Init() noexcept
 	openCount = 0;
 	closeRequested = false;
 #endif
-#if HAS_EMBEDDED_FILES
+#if HAS_EMBEDDED_FILES || HAS_EMBEDDED_CONFIG
 	fileIndex = -1;
 #endif
 #if HAS_SBC_INTERFACE
 	handle = noFileHandle;
 	length = 0;
+	asyncWriteFailed = false;
 #endif
-#if HAS_EMBEDDED_FILES || HAS_SBC_INTERFACE
+#if HAS_EMBEDDED_FILES || HAS_SBC_INTERFACE || HAS_EMBEDDED_CONFIG
 	offset = 0;
 #endif
 }
@@ -54,8 +59,8 @@ void FileStore::Init() noexcept
 bool FileStore::Open(const char *_ecv_array filePath, OpenMode mode, uint32_t preAllocSize) noexcept
 {
 	const bool writing = (mode == OpenMode::write || mode == OpenMode::writeWithCrc || mode == OpenMode::append);
-#if HAS_EMBEDDED_FILES
-# if HAS_SBC_INTERFACE
+#if HAS_EMBEDDED_FILES || HAS_EMBEDDED_CONFIG
+# if HAS_SBC_INTERFACE && !HAS_EMBEDDED_CONFIG
 	if (!reprap.UsingSbcInterface())
 # endif
 	{
@@ -70,7 +75,7 @@ bool FileStore::Open(const char *_ecv_array filePath, OpenMode mode, uint32_t pr
 				return true;
 			}
 		}
-
+#if !HAS_EMBEDDED_CONFIG
 		// We no longer report an error if opening a file in read mode fails unless debugging is enabled, because sometimes that is quite normal.
 		// It is up to the caller to report an error if necessary.
 		if (reprap.Debug(Module::Storage))
@@ -78,6 +83,7 @@ bool FileStore::Open(const char *_ecv_array filePath, OpenMode mode, uint32_t pr
 			reprap.GetPlatform().MessageF(WarningMessage, "Failed to open %s to %sn", filePath, (writing) ? "write" : "read");
 		}
 		return false;
+#endif
 	}
 #endif
 
@@ -101,6 +107,12 @@ bool FileStore::Open(const char *_ecv_array filePath, OpenMode mode, uint32_t pr
 		if (mode == OpenMode::write || mode == OpenMode::writeWithCrc)
 		{
 			writeBuffer = MassStorage::AllocateWriteBuffer();
+#if HAS_WRITER_TASK
+			if (writeBuffer != nullptr)
+			{
+				writeBuffer->BindToFile(this);
+			}
+#endif
 		}
 	}
 
@@ -113,6 +125,7 @@ bool FileStore::Open(const char *_ecv_array filePath, OpenMode mode, uint32_t pr
 		if (handle != noFileHandle)
 		{
 			offset = (mode == OpenMode::append) ? length : 0;
+			asyncWriteFailed = false;
 			fileOpened = true;
 		}
 		else
@@ -252,6 +265,13 @@ bool FileStore::Seek(FilePosition pos) noexcept
 
 	case FileUseMode::readOnly:
 	case FileUseMode::readWrite:
+#if HAS_EMBEDDED_CONFIG
+		if (fileIndex >= 0)
+		{
+			offset = min<FilePosition>(pos, EmbeddedFiles::Length(fileIndex));
+			return true;
+		}
+#endif
 #if HAS_SBC_INTERFACE
 		if (reprap.UsingSbcInterface())
 		{
@@ -280,6 +300,12 @@ bool FileStore::Seek(FilePosition pos) noexcept
 
 FilePosition FileStore::Position() const noexcept
 {
+#if HAS_EMBEDDED_CONFIG
+	if (fileIndex >= 0)
+	{
+		return offset;
+	}
+#endif
 #if HAS_SBC_INTERFACE
 	if (reprap.UsingSbcInterface())
 	{
@@ -377,7 +403,7 @@ bool FileStore::Truncate() noexcept
 
 #endif
 
-#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES || HAS_EMBEDDED_CONFIG
 
 // Returns the number of bytes read or -1 if the read process failed
 int FileStore::Read(char *_ecv_array extBuf, size_t nBytes) noexcept
@@ -390,6 +416,17 @@ int FileStore::Read(char *_ecv_array extBuf, size_t nBytes) noexcept
 
 	case FileUseMode::readOnly:
 	case FileUseMode::readWrite:
+#if HAS_EMBEDDED_CONFIG
+		if (fileIndex >= 0)
+		{
+			const int ret = EmbeddedFiles::Read(fileIndex, offset, extBuf, nBytes);
+			if (ret > 0)
+			{
+				offset += ret;
+			}
+			return ret;
+		}
+#endif
 #if HAS_SBC_INTERFACE
 		if (reprap.UsingSbcInterface())
 		{
@@ -479,6 +516,17 @@ bool FileStore::ForceClose() noexcept
 	{
 		MassStorage::ReleaseWriteBuffer(writeBuffer);
 		writeBuffer = nullptr;
+	}
+#endif
+
+#if HAS_EMBEDDED_CONFIG
+	if (fileIndex >= 0)
+	{
+		usageMode = FileUseMode::free;
+		closeRequested = false;
+		openCount = 0;
+		fileIndex = -1;
+		return true;
 	}
 #endif
 
@@ -574,6 +622,46 @@ bool FileStore::Store(const char *_ecv_array s, size_t len, size_t *bytesWritten
 #endif
 }
 
+bool FileStore::StoreFullWriteBuffer() noexcept
+{
+	const size_t bytesToWrite = writeBuffer->BytesStored();
+#if HAS_SBC_INTERFACE
+	if (reprap.UsingSbcInterface())
+	{
+		// Hand the full buffer to the SBC task and carry on filling a spare one so that the caller isn't stalled by the SPI round trip
+		FileWriteBuffer *const spareBuffer = MassStorage::AllocateWriteBuffer();
+		if (spareBuffer != nullptr)
+		{
+			if (calcCrc)
+			{
+				crc.Update(writeBuffer->Data(), bytesToWrite);
+			}
+			if (!reprap.GetSbcInterface().WriteFileAsync(handle, writeBuffer, asyncWriteFailed))
+			{
+				MassStorage::ReleaseWriteBuffer(spareBuffer);
+				return false;
+			}
+			writeBuffer = spareBuffer;
+			offset += bytesToWrite;
+			if (offset > length)
+			{
+				length = offset;
+			}
+			return true;
+		}
+	}
+#endif
+
+	size_t bytesWritten;
+	// In SBC mode, if we have a timeout or a connection reset then during the following Store() call this file may be invalidated
+	if (!Store(writeBuffer->Data(), bytesToWrite, &bytesWritten))
+	{
+		return false;
+	}
+	writeBuffer->DataTaken();
+	return bytesWritten == bytesToWrite;
+}
+
 bool FileStore::Write(char b) noexcept
 {
 	return Write(&b, sizeof(char));
@@ -597,6 +685,13 @@ bool FileStore::Write(const char *_ecv_array s, size_t len) noexcept
 		{
 			size_t totalBytesWritten = 0;
 			bool writeOk = true;
+#if HAS_SBC_INTERFACE
+			if (asyncWriteFailed)
+			{
+				writeOk = false;
+			}
+			else
+#endif
 			if (writeBuffer == nullptr)
 			{
 				writeOk = Store(s, len, &totalBytesWritten);
@@ -605,25 +700,22 @@ bool FileStore::Write(const char *_ecv_array s, size_t len) noexcept
 			{
 				do
 				{
+#if HAS_WRITER_TASK
+					// If the buffer is currently being written we need to wait for it to complete
+					writeBuffer->WaitFlushComplete();
+#endif				
 					const size_t bytesStored = writeBuffer->Store(s + totalBytesWritten, len - totalBytesWritten);
 					if (writeBuffer->BytesLeft() == 0)
 					{
-						const size_t bytesToWrite = writeBuffer->BytesStored();
-						size_t bytesWritten;
-						// In SBC mode, if we have a timeout or a connection reset then during the following Store() call this file may be invalidated
-						writeOk = Store(writeBuffer->Data(), bytesToWrite, &bytesWritten);
+#if HAS_WRITER_TASK
+						writeOk = writeBuffer->StartFlushBuffer();
+#else
+						writeOk = StoreFullWriteBuffer();
 						if (!writeOk)
 						{
 							break;
 						}
-
-						writeBuffer->DataTaken();
-
-						if (bytesToWrite != bytesWritten)
-						{
-							// Something went wrong
-							break;
-						}
+#endif
 					}
 					totalBytesWritten += bytesStored;
 				}
@@ -644,6 +736,11 @@ bool FileStore::Write(const char *_ecv_array s, size_t len) noexcept
 	}
 }
 
+int FileStore::CanWrite() noexcept
+{
+	return writeBuffer == nullptr ? 0x7fffffff : writeBuffer->BytesLeft();
+}
+
 bool FileStore::Flush() noexcept
 {
 	switch (usageMode)
@@ -658,6 +755,22 @@ bool FileStore::Flush() noexcept
 	case FileUseMode::readWrite:
 		if (writeBuffer != nullptr)
 		{
+#if HAS_WRITER_TASK
+			writeBuffer->WaitFlushComplete();
+			writeBuffer->StartFlushBuffer();
+			writeBuffer->WaitFlushComplete();
+#else
+#if HAS_SBC_INTERFACE
+			if (reprap.UsingSbcInterface())
+			{
+				reprap.GetSbcInterface().WaitForAsyncWrite();
+				if (asyncWriteFailed)
+				{
+					reprap.GetPlatform().MessageF(ErrorMessage, "Failed to flush data to file. Card may be full.\n");
+					return false;
+				}
+			}
+#endif
 			const size_t bytesToWrite = writeBuffer->BytesStored();
 			if (bytesToWrite != 0)
 			{
@@ -676,6 +789,7 @@ bool FileStore::Flush() noexcept
 				reprap.GetPlatform().MessageF(ErrorMessage, "Failed to flush data to file. Card may be full.\n");
 				return false;
 			}
+#endif
 		}
 #if HAS_SBC_INTERFACE
 		if (reprap.UsingSbcInterface())
@@ -775,6 +889,105 @@ bool FileStore::SetClusterMap(uint32_t tbl[]) noexcept
 
 #endif
 
+#if HAS_WRITER_TASK
+constexpr size_t WriterStackWords = 200;
+constexpr uint32_t FileIoTimeout = 2000;
+
+static TASKMEM Task<WriterStackWords> WriterTask;
+static FileWriteBuffer * volatile WriteQueue[NumFileWriteBuffers];
+static volatile uint32_t CurrentWrite, AddWrite; 
+extern "C" [[noreturn]]void WriterLoop(void *) noexcept
+{
+	for(;;)
+		FileWriteBuffer::Spin();
+}
+
+void FileWriteBuffer::InitWriterTask() noexcept
+{
+	WriterTask.Create(WriterLoop, "FSWRITE", nullptr, TaskPriority::SpinPriority+1);
+	for(uint32_t i = 0; i < NumFileWriteBuffers; i++)
+		WriteQueue[i] = nullptr;
+	CurrentWrite = 0;
+	AddWrite = 0;
+}
+
+void FileWriteBuffer::Spin() noexcept
+{
+	for(;;)
+	{
+		FileWriteBuffer *fb = WriteQueue[CurrentWrite];
+		if (fb != nullptr && fb->writePending)
+		{
+			const size_t bytesToWrite = fb->BytesStored();
+			size_t bytesWritten;
+			const bool writeStatus = fb->fileToWrite->Store(fb->Data(), bytesToWrite, &bytesWritten);
+			fb->DataTaken();
+
+			if (!writeStatus || (bytesToWrite != bytesWritten))
+			{
+				reprap.GetPlatform().MessageF(ErrorMessage, "Failed to write data to file, error code %d. Card may be full.\n", (int)writeStatus);
+			}
+			WriteQueue[CurrentWrite] = nullptr;
+			fb->writePending = false;
+			TaskHandle t = fb->waitingTask;
+			if (t != nullptr) t->Give(NotifyIndices::FileIO);
+			CurrentWrite = (CurrentWrite + 1) % NumFileWriteBuffers;
+		}
+		else
+			TaskBase::TakeIndexed(NotifyIndices::FileIO);
+
+	}
+}
+
+
+bool FileWriteBuffer::StartFlushBuffer() noexcept
+{
+	// Anything to do?
+	if (BytesStored() == 0) return true;
+	{
+		TaskCriticalSectionLocker lock;
+		if (WriteQueue[AddWrite] != nullptr)
+		{
+			// This should never happen!
+			debugPrintf("Error: Write queue entry is in use\n");
+			return false;
+		}
+		writePending = true;
+		WriteQueue[AddWrite] = this;
+		AddWrite = (AddWrite+1) % NumFileWriteBuffers;
+	}
+	WriterTask.Give(NotifyIndices::FileIO);
+	return true;
+}
+
+
+bool FileWriteBuffer::WaitFlushComplete() noexcept
+{
+	if (!writePending) return true;
+	{
+		TaskCriticalSectionLocker lock;
+		if (!writePending) return true;
+		waitingTask = TaskBase::GetCallerTaskHandle();
+	}
+	TaskBase::TakeIndexed(NotifyIndices::FileIO, FileIoTimeout);
+	waitingTask = nullptr;
+	if (writePending)	
+	{
+		// timeout should not ever happen
+		debugPrintf("Failed to flush write buffer\n");
+		return false;
+	}
+	return true;
+}
+
+void FileWriteBuffer::BindToFile(FileStore *fs) noexcept
+{
+	writePending = false;
+	waitingTask = nullptr;
+	fileToWrite = fs;
+}
+
+#endif // HAS_WRITER_TASK
 #endif	// HAS_MASS_STORAGE || HAS_SBC_INTERFACE
 
 #if SUPPORT_ASYNC_MOVES && (HAS_MASS_STORAGE || HAS_EMBEDDED_FILES)

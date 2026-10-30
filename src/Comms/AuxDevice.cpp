@@ -11,6 +11,7 @@
 
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
+#include <GCodes/GCodes.h>
 #include <AsyncSerial.h>
 #if SUPPORT_MMU2S
 # include "MMU2S/MMU2S.h"
@@ -77,7 +78,9 @@ void AuxDevice::SetMode(AuxMode p_mode) noexcept
 #elif SUPPORT_MODBUS_RTU
 			uart->SetOnTxEndedCallback((p_mode == AuxMode::device) ? GlobalTxEndedCallback : nullptr, CallbackParameter(this));
 #endif
-			uart->begin(baudRate);
+			// Binary device traffic must not be scanned for the PanelDue halt sequence, else data or CRC bytes can trigger an emergency stop
+			uart->SetInterruptCallback((p_mode != AuxMode::device) ? GCodes::CommandEmergencyStop : nullptr);
+			uart->begin(baudRate, serialMode);
 			mode = p_mode;
 		}
 	}
@@ -606,6 +609,7 @@ GCodeResult AuxDevice::ReadUartData(uint8_t *_ecv_array data, size_t bytesToRead
 	if (bytesToRead == 0)
 	{
 		uart->ClearReceiveBuffer();
+		mutex.Release();
 		return GCodeResult::ok;
 	}
 

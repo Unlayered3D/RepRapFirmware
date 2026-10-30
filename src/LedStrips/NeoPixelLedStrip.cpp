@@ -108,11 +108,16 @@ GCodeResult NeoPixelLedStrip::NeoPixelSendData(LedParams& params) noexcept
 size_t NeoPixelLedStrip::GetBytesPerLed() const noexcept
 {
 	const size_t bytesPerLed = (IsRGBW()) ? 4 : 3;
+#if TGBTC
+	return bytesPerLed;
+#else
 	return (useDma) ? bytesPerLed * 4 : bytesPerLed;
+#endif
 }
 
 #if SUPPORT_DMA_NEOPIXEL
 
+#if !TGBTC
 // Encode one NeoPixel byte into the buffer.
 // A 0 bit is encoded as 1000
 // A 1 bit is encoded as 1110
@@ -134,10 +139,28 @@ static void EncodeNeoPixelByte(uint8_t *_ecv_array p, uint8_t val) noexcept
 	*p++ = EncodedByte[val & 3];
 # endif
 }
+#endif
 
 // Send data to NeoPixel LEDs by DMA to SPI
 GCodeResult NeoPixelLedStrip::SpiSendData(const LedParams& params) noexcept
 {
+#if TGBTC
+	const unsigned int bytesPerLed = (IsRGBW()) ? 4 : 3;
+	unsigned int numLeds = params.numLeds;
+	uint8_t *_ecv_array p = chunkBuffer + (bytesPerLed * numAlreadyInBuffer);
+	while (numLeds != 0 && p + bytesPerLed <= chunkBuffer + chunkBufferSize)
+	{
+		*p++ = (uint8_t)params.firstColour;
+		*p++ = (uint8_t)params.secondColour;
+		*p++ = (uint8_t)params.thirdColour;
+		if (IsRGBW())
+		{
+			*p++ = (uint8_t)params.white;
+		}
+		--numLeds;
+		++numAlreadyInBuffer;
+	}
+#else
 	const unsigned int bytesPerLed = (IsRGBW()) ? 16 : 12;
 	unsigned int numLeds = params.numLeds;
 	uint8_t *_ecv_array p = chunkBuffer + (bytesPerLed * numAlreadyInBuffer);
@@ -157,7 +180,7 @@ GCodeResult NeoPixelLedStrip::SpiSendData(const LedParams& params) noexcept
 		--numLeds;
 		++numAlreadyInBuffer;
 	}
-
+#endif
 	if (!params.following)
 	{
 		DmaSendChunkBuffer(bytesPerLed * numAlreadyInBuffer);		// send data by DMA to SPI
@@ -169,10 +192,6 @@ GCodeResult NeoPixelLedStrip::SpiSendData(const LedParams& params) noexcept
 #endif
 
 // Bit bang data to Neopixels. See https://wp.josh.com/2014/05/13/ws2812-neopixels-are-not-so-finicky-once-you-get-to-know-them/ for the timing requirements.
-constexpr uint32_t NanosecondsToCycles(uint32_t ns) noexcept
-{
-	return (ns * (uint64_t)SystemCoreClockFreq)/1000000000u;
-}
 
 constexpr uint32_t T0H = NanosecondsToCycles(300);
 constexpr uint32_t T1H = NanosecondsToCycles(700);

@@ -9,6 +9,7 @@
 #define SRC_COMMS_AUXDEVICE_H_
 
 #include <RepRapFirmware.h>
+#include <UART/UartMode.h>
 
 enum class AuxMode : uint8_t
 {
@@ -39,6 +40,7 @@ public:
 	void Init(AsyncSerial *p_uart, uint32_t p_baudRate) noexcept;
 	bool IsEnabledForGCodeIo() const noexcept { return mode == AuxMode::raw || mode == AuxMode::panelDue; }
 	void SetMode(AuxMode p_mode) noexcept;
+	void SetSerialMode(UartMode uartMode) noexcept { serialMode = uartMode; }			// applied on next SetMode; affects device/Modbus mode only
 	void SetBaudRate(uint32_t p_baudRate) noexcept { baudRate = p_baudRate; }			// must call SetMode after calling this to actually change the baud rate
 
 	// Single-wire (half-duplex) operation, where transmit and receive share one conductor and everything we
@@ -111,6 +113,8 @@ private:
 	AuxMode mode = AuxMode::disabled;		// whether disabled, raw, PanelDue mode or Modbus RTU mode
 	bool halfDuplex = false;				// true if transmit and receive share one wire, so our own output comes back at us
 	volatile uint32_t echoBytesPending = 0;	// half duplex: bytes we have transmitted whose echo is still to be discarded
+
+	UartMode serialMode = UartMode::Mode8N1;	// device/Modbus serial parity: none=8N1, even=8E1, odd=8O1
 
 #if SUPPORT_MODBUS_RTU
 	IoPort txNotRx;							// port used to switch the RS485 port between transmit and receive

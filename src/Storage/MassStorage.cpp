@@ -5,8 +5,12 @@
 
 #if HAS_MASS_STORAGE
 # include <Libraries/Fatfs/diskio.h>
+#if !TGBTC 
 # include <Libraries/sd_mmc/sd_mmc.h>
 # include <Libraries/sd_mmc/conf_sd_mmc.h>
+// Check that the correct number of SD cards is configured in the library
+static_assert(SD_MMC_MEM_CNT == NumSdCards);
+#endif
 
 # if FF_LRU
 #  include <Platform/Tasks.h>			// for AllocPermanent
@@ -14,9 +18,6 @@
 
 // Check that the LFN configuration in FatFS is sufficient
 static_assert(FF_MAX_LFN >= MaxFilenameLength, "FF_MAX_LFN too small");
-
-// Check that the correct number of SD cards is configured in the library
-static_assert(SD_MMC_MEM_CNT == NumSdCards);
 #endif
 
 #if HAS_SBC_INTERFACE
@@ -57,9 +58,12 @@ alignas(4) static __nocache uint8_t sectorBuffers[NumLruBuffers][FF_MAX_SS];
 #  else
 alignas(4) static __nocache uint8_t sectorBuffers[NumSdCards][FF_MAX_SS];
 #  endif
-
-alignas(4) static __nocache char writeBufferStorage[NumFileWriteBuffers][FileWriteBufLen];
-
+# elif TGBTC && STM32H7
+#  if FF_LRU
+alignas(4) static __nocache2 uint8_t sectorBuffers[NumLruBuffers][FF_MAX_SS];
+#  else
+alignas(4) static __nocache2 uint8_t sectorBuffers[NumSdCards][FF_MAX_SS];
+#  endif
 # elif FF_LRU
 
 alignas(4) static uint8_t sectorBuffers[NumLruBuffers][FF_MAX_SS];
@@ -97,7 +101,7 @@ protected:
 void SdCardInfo::Clear(unsigned int card) noexcept
 {
 	memset(&fileSystem, 0, sizeof(fileSystem));
-# if SAME70 && !FF_LRU
+# if (SAME70 || (TGBTC && STM32H7)) && !FF_LRU
 	ff_set_win(&fileSystem, sectorBuffers[card]);
 # endif
 }
@@ -160,13 +164,40 @@ static DIR findDir;
 
 #endif	// HAS_MASS_STORAGE
 
-#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
 static Mutex dirMutex;
+#endif
+
+#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 static FileInfoParser infoParser;
 #endif
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
+# if SAME70
+alignas(4) static __nocache char writeBufferStorage[NumFileWriteBuffers * FileWriteBufLen];
+# elif TGBTC && STM32H7
+alignas(4) static __nocache2 char writeBufferStorage[NumFileWriteBuffers * FileWriteBufLen];
+# else
+alignas(4) static char writeBufferStorage[NumFileWriteBuffers * FileWriteBufLen];	// 32-bit aligned for better HSMCI performance
+# endif
+# if HAS_SBC_INTERFACE
+static FileWriteBuffer writeBuffers[NumSbcFileWriteBuffers];
+# else
+static FileWriteBuffer writeBuffers[NumFileWriteBuffers];
+# endif
 static FileWriteBuffer *_ecv_null freeWriteBuffers;
+
+// Carve the write buffer storage into numBuffers buffers of bufLen bytes and put them all on the free list
+static void InitWriteBuffers(size_t numBuffers, size_t bufLen) noexcept
+{
+	TaskCriticalSectionLocker lock;
+	freeWriteBuffers = nullptr;
+	for (size_t i = 0; i < numBuffers; i++)
+	{
+		writeBuffers[i].Init(freeWriteBuffers, writeBufferStorage + i * bufLen);
+		freeWriteBuffers = &writeBuffers[i];
+	}
+}
 #endif
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
@@ -371,7 +402,7 @@ void MassStorage::Init() noexcept
 {
 	fsMutex.Create("FileSystem");
 
-#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
 	dirMutex.Create("DirSearch");
 #endif
 
@@ -380,17 +411,12 @@ void MassStorage::Init() noexcept
 #endif
 
 # if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
-	freeWriteBuffers = nullptr;
-	for (size_t i = 0; i < NumFileWriteBuffers; ++i)
-	{
-#  if SAME70
-		freeWriteBuffers = new FileWriteBuffer(freeWriteBuffers, writeBufferStorage[i]);
-#  else
-		freeWriteBuffers = new FileWriteBuffer(freeWriteBuffers);
-#  endif
-	}
+	InitWriteBuffers(NumFileWriteBuffers, FileWriteBufLen);
 # endif
 
+#if HAS_WRITER_TASK
+	FileWriteBuffer::InitWriterTask();
+#endif
 # if HAS_MASS_STORAGE
 	static const char *_ecv_array const VolMutexNames[] = { "SD0", "SD1" };
 	static_assert(ARRAY_SIZE(VolMutexNames) >= NumSdCards, "Incorrect VolMutexNames array");
@@ -424,6 +450,20 @@ void MassStorage::Init() noexcept
 	// We no longer mount the SD card here because it may take a long time if it fails
 # endif
 }
+
+#if TGBTC && HAS_MASS_STORAGE
+void MassStorage::Init2() noexcept
+{
+	// some things may have changed when we loaded the board config, update them.
+	for (size_t card = 0; card < NumSdCards; ++card)
+	{
+		SdCardInfo& inf = info[card];
+		inf.cdPin = SdCardDetectPins[card];
+		SetPinMode(SdCardDetectPins[card], INPUT_PULLUP, false);
+		inf.cardState = (inf.cdPin == NoPin) ? CardDetectState::present : CardDetectState::notPresent;
+	}
+}
+#endif
 
 
 void MassStorage::Spin() noexcept
@@ -606,9 +646,11 @@ bool MassStorage::DirectoryExists(const StringRef& path) noexcept
 // Static helper functions
 size_t FileWriteBuffer::fileWriteBufLen = FileWriteBufLen;
 
+// The free list is guarded by a critical section rather than fsMutex because in SBC mode the SBC task releases buffers
+// while a task holding fsMutex may be waiting for it
 FileWriteBuffer *_ecv_null MassStorage::AllocateWriteBuffer() noexcept
 {
-	MutexLocker lock(fsMutex);
+	TaskCriticalSectionLocker lock;
 
 	FileWriteBuffer *_ecv_null const buffer = freeWriteBuffers;
 	if (buffer != nullptr)
@@ -622,12 +664,19 @@ FileWriteBuffer *_ecv_null MassStorage::AllocateWriteBuffer() noexcept
 
 void MassStorage::ReleaseWriteBuffer(FileWriteBuffer *buffer) noexcept
 {
-	MutexLocker lock(fsMutex);
+	TaskCriticalSectionLocker lock;
 	buffer->SetNext(freeWriteBuffers);
 	freeWriteBuffers = buffer;
 }
 
 # if HAS_SBC_INTERFACE
+
+// Called once at startup when SBC mode is detected, before any file has been opened
+void MassStorage::ConfigureSbcBuffering() noexcept
+{
+	FileWriteBuffer::ConfigureSbcBuffering();
+	InitWriteBuffers(NumSbcFileWriteBuffers, SbcFileWriteBufLen);
+}
 
 // Return true if any files are open on the file system
 bool MassStorage::AnyFileOpen() noexcept
@@ -715,61 +764,78 @@ static bool InternalDelete(const char *_ecv_array filePath, ErrorMessageMode err
 	return true;
 }
 
-// Delete the contents of an open directory returning true if successful
+// Delete the contents of a directory returning true if successful
 // File system must be locked before calling this
-// This is recursive. In order to avoid using large amounts of stack it uses the string referred to by filePath to hold the name of each contained file as it is deleted.
-static bool DeleteContents(DIR& dir, const StringRef& filePath, ErrorMessageMode errorMessageMode) noexcept
+// This is iterative so that the stack usage does not grow with the directory depth, which matters on the network task.
+// It uses the string referred to by filePath to hold the path of the directory being emptied, descends into the first subdirectory it finds,
+// and deletes each directory once it is empty before rescanning its parent.
+static bool DeleteContents(const StringRef& filePath, ErrorMessageMode errorMessageMode) noexcept
 {
-	const size_t originalPathLength = filePath.strlen();
-	size_t pathLength = originalPathLength;
-	if (originalPathLength == 0 || filePath[originalPathLength - 1] != '/')
-	{
-		filePath.cat('/');
-		++pathLength;
-	}
-
+	const size_t rootLength = filePath.strlen();
 	bool ok = true;
 	while (ok)
 	{
-		FILINFO entry;
-		const FRESULT res = f_readdir(&dir, &entry);
-		if (res != FR_OK || entry.fname[0] == 0)
+		DIR dir;
+		if (f_opendir(&dir, filePath.c_str()) != FR_OK)
 		{
+			ok = (filePath.strlen() == rootLength);			// the root may be a plain file, which the caller deletes
 			break;
 		}
-		if (!StringEqualsIgnoreCase(entry.fname, ".") && !StringEqualsIgnoreCase(entry.fname, ".."))
+
+		const size_t dirLength = filePath.strlen();
+		bool foundSubdirectory = false;
+		while (ok)
 		{
-			filePath.cat(entry.fname);
-			if ((entry.fattrib & AM_DIR) != 0)
+			FILINFO entry;
+			const FRESULT res = f_readdir(&dir, &entry);
+			if (res != FR_OK)
 			{
-				DIR dir2;
-				if (f_opendir(&dir2, filePath.c_str()) == FR_OK)
-				{
-					const bool ok2 = DeleteContents(dir, filePath, errorMessageMode);
-					f_closedir(&dir2);
-					if (!ok2)
-					{
-						return false;
-					}
-				}
-				else
-				{
-					ok = false;
-				}
+				ok = false;
 			}
-			else
+			else if (entry.fname[0] == 0)
 			{
+				break;
+			}
+			else if (!StringEqualsIgnoreCase(entry.fname, ".") && !StringEqualsIgnoreCase(entry.fname, ".."))
+			{
+				if (dirLength == 0 || filePath[dirLength - 1] != '/')
+				{
+					filePath.cat('/');
+				}
+				filePath.cat(entry.fname);
+				if ((entry.fattrib & AM_DIR) != 0)
+				{
+					foundSubdirectory = true;
+					break;
+				}
 				if (!InternalDelete(filePath.c_str(), errorMessageMode))
 				{
 					ok = false;
 				}
+				filePath.Truncate(dirLength);
 			}
-			filePath.Truncate(pathLength);
+		}
+		f_closedir(&dir);
+
+		if (ok && !foundSubdirectory)
+		{
+			if (dirLength <= rootLength)
+			{
+				break;
+			}
+
+			// This subdirectory is empty now, so delete it and go back up to its parent
+			if (!InternalDelete(filePath.c_str(), errorMessageMode))
+			{
+				ok = false;
+			}
+			const char *_ecv_array const lastSlash = strrchr(filePath.c_str(), '/');
+			filePath.Truncate(max<size_t>((size_t)(lastSlash - filePath.c_str()), rootLength));
 		}
 	}
 
-	filePath.Truncate(originalPathLength);
-	return true;
+	filePath.Truncate(rootLength);
+	return ok;
 }
 
 # endif
@@ -817,16 +883,10 @@ bool MassStorage::Delete(const StringRef& filePath, ErrorMessageMode errorMessag
 		}
 
 		MutexLocker locker(fsMutex);
-		DIR dir;
-		if (f_opendir(&dir, filePath.c_str()) == FR_OK)
+		if (!DeleteContents(filePath, errorMessageMode))
 		{
-			const bool ok1 = DeleteContents(dir, filePath, errorMessageMode);
-			f_closedir(&dir);
-			if (!ok1)
-			{
-				(void)VolumeUpdated(filePath.c_str());			// in case we deleted any contained files
-				return false;
-			}
+			(void)VolumeUpdated(filePath.c_str());			// in case we deleted any contained files
+			return false;
 		}
 	}
 
@@ -914,7 +974,60 @@ bool MassStorage::SecureDelete(const StringRef& filePath, ErrorMessageMode error
 
 #endif
 
-#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
+
+#if HAS_SBC_INTERFACE
+
+// In SBC mode directory listings are fetched from DSF in chunks, because sending one request per entry would mean
+// one SPI round trip per entry. Only one search can be active at a time, which dirMutex already guarantees
+constexpr size_t SbcFileListBufferSize = 1024;
+
+alignas(4) static char sbcListBuffer[SbcFileListBufferSize];
+static String<MaxFilenameLength> sbcListDirectory;
+static size_t sbcListBytes, sbcListPos;
+static uint32_t sbcListNextIndex;
+static bool sbcListEnd;
+
+// Return the next entry of the listing being read, fetching another chunk if the current one is exhausted. Call with dirMutex owned
+static bool GetNextSbcListEntry(FileInfo& file_info) noexcept
+{
+	if (sbcListPos == sbcListBytes)
+	{
+		if (sbcListEnd)
+		{
+			return false;
+		}
+		sbcListBytes = reprap.GetSbcInterface().GetFileList(sbcListDirectory.c_str(), sbcListNextIndex, sbcListBuffer, SbcFileListBufferSize, sbcListEnd);
+		sbcListPos = 0;
+		if (sbcListBytes == 0)
+		{
+			return false;
+		}
+	}
+
+	// Give up if the remaining data is too short to hold another entry, which means DSF sent us something we don't understand
+	const size_t nameOffset = sbcListPos + sizeof(FileListEntry);
+	if (nameOffset > sbcListBytes)
+	{
+		return false;
+	}
+
+	const FileListEntry *const entry = reinterpret_cast<const FileListEntry*>(sbcListBuffer + sbcListPos);
+	if (nameOffset + entry->nameLength > sbcListBytes)
+	{
+		return false;
+	}
+
+	file_info.isDirectory = entry->isDirectory;
+	file_info.size = entry->size;
+	file_info.lastModified = (time_t)entry->lastModified;
+	file_info.fileName.copy(sbcListBuffer + nameOffset, entry->nameLength);
+	sbcListPos = nameOffset + ((entry->nameLength + 3) & ~3);
+	sbcListNextIndex++;
+	return true;
+}
+
+#endif
 
 // Open a directory to read a file list. Returns true if it contains any files, false otherwise.
 // If this returns true then the file system mutex is owned. The caller must subsequently release the mutex either
@@ -934,6 +1047,23 @@ bool MassStorage::FindFirst(const char *_ecv_array directory, FileInfo &file_inf
 	{
 		return false;
 	}
+
+#if HAS_SBC_INTERFACE
+	if (reprap.UsingSbcInterface())
+	{
+		sbcListDirectory.copy(loc.c_str());
+		sbcListNextIndex = 0;
+		sbcListBytes = sbcListPos = 0;
+		sbcListEnd = false;
+		if (GetNextSbcListEntry(file_info))
+		{
+			return true;
+		}
+
+		dirMutex.Release();
+		return false;
+	}
+#endif
 
 #if HAS_MASS_STORAGE
 	if (f_opendir(&findDir, loc.c_str()) == FR_OK)
@@ -974,6 +1104,19 @@ bool MassStorage::FindNext(FileInfo &file_info) noexcept
 		return false;		// error, we don't hold the mutex
 	}
 
+#if HAS_SBC_INTERFACE
+	if (reprap.UsingSbcInterface())
+	{
+		if (GetNextSbcListEntry(file_info))
+		{
+			return true;
+		}
+
+		dirMutex.Release();
+		return false;
+	}
+#endif
+
 #if HAS_MASS_STORAGE
 	FILINFO entry;
 
@@ -993,7 +1136,6 @@ bool MassStorage::FindNext(FileInfo &file_info) noexcept
 		return true;
 	}
 #endif
-	// TODO implement SBC interface for this
 
 	dirMutex.Release();
 	return false;
@@ -1234,7 +1376,7 @@ bool MassStorage::IsCardDetected(size_t card) noexcept
 // Mount the specified SD card, returning true if done, false if needs to be called again.
 // If an error occurs, return true with the error message in 'reply'.
 // This may only be called to mount one card at a time.
-GCodeResult MassStorage::Mount(size_t card, const StringRef& reply, bool reportSuccess) noexcept
+GCodeResult MassStorage::Mount(size_t card, const StringRef& reply, bool reportSuccess, uint32_t timeout) noexcept
 {
 	if (card >= GetNumVolumes())
 	{
@@ -1281,7 +1423,7 @@ GCodeResult MassStorage::Mount(size_t card, const StringRef& reply, bool reportS
 	}
 
 	const sd_mmc_err_t err = sd_mmc_check(card);
-	if (err != SD_MMC_OK && millis() - inf.mountStartTime < 5000)
+	if (err != SD_MMC_OK && millis() - inf.mountStartTime < timeout)
 	{
 		delay(2);
 		return GCodeResult::notFinished;

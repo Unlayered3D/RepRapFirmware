@@ -41,6 +41,9 @@
 #endif
 
 #if HAS_SBC_INTERFACE
+# if TGBTC
+#  include "TGBTC/BoardConfig.h"
+# endif
 # include <SBC/SbcInterface.h>
 #endif
 
@@ -87,6 +90,9 @@ static_assert(CONF_HSMCI_XDMAC_CHANNEL == DmacChanHsmci, "mismatched DMA channel
 # include <wdt/wdt.h>
 #endif
 
+#if TGBTC && HAS_SBC_INTERFACE
+# include <iapparams.h>
+# endif
 // We call vTaskNotifyGiveFromISR from various interrupts, so the following must be true
 static_assert(configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY <= NvicPriorityHSMCI, "configMAX_SYSCALL_INTERRUPT_PRIORITY is set too high");
 
@@ -526,6 +532,9 @@ void RepRap::Init() noexcept
 	NVIC_SetPriority(WDT_IRQn, NvicPriorityWatchdog);								// set priority for watchdog interrupts
 	NVIC_ClearPendingIRQ(WDT_IRQn);
 	NVIC_EnableIRQ(WDT_IRQn);														// enable the watchdog early warning interrupt
+#elif TGBTC && STM32
+	NVIC_SetPriority(WWDG_IRQn, NvicPriorityWatchdog);								// set priority for watchdog interrupts
+	WatchdogInit();
 #else
 	{
 		// The clock frequency for both watchdogs is about 32768/128 = 256Hz
@@ -559,8 +568,7 @@ void RepRap::Init() noexcept
 	}
 #endif
 
-	active = true;										// must do this after we initialise the watchdog but before we start the network or call Spin(), else the watchdog may time out
-
+	active = true;										// must do this after we initialise the watchdog but before we start the network or call Spin(), else the watchdog
 	delay(100);											// give the tick ISR time to collect voltage readings
 	platform->ResetVoltageMonitors();					// get rid of the spurious zero minimum voltage readings
 
@@ -573,9 +581,38 @@ void RepRap::Init() noexcept
 
 	platform->MessageF(UsbMessage, "%s\n", VersionText);
 
+#if (TGBTC && HAS_SBC_INTERFACE && HAS_MASS_STORAGE)
+	// Modified startup code for TG port. Unlike the Duet we do not use the presence of the SD card
+	// to control SBC mode (as we may need the card for board.txt). Instead we check for config.g and
+	// use that to decide on the mode.
+	// Are we forcing sbc mode
+	usingSbcInterface = SbcMode;
+	if (!usingSbcInterface)
+	{
+		// Try to mount the first SD card
+		GCodeResult rslt;
+		String<100> reply;
+		do
+		{
+			MassStorage::Spin();						// Spin() doesn't get called regularly until after this function completes, and we need it to update the card detect status
+			rslt = MassStorage::Mount(0, reply.GetRef(), false, 100);
+		}
+		while (rslt == GCodeResult::notFinished);
+		if (rslt != GCodeResult::ok)
+		{
+			platform->Message(AddWarning(UsbMessage), "unable to mount SD card\n");
+		}
+		// Run the configuration file (which may be in embedded storage)
+		if (!RunStartupFile(GCodes::CONFIG_FILE, true) && !RunStartupFile(GCodes::CONFIG_BACKUP_FILE, true) && !RunStartupFile(BoardConfig::DEFAULT_CONFIG_FILE, true))
+		{
+			platform->Message(AddWarning(UsbMessage), "no configuration file found\n");
+			usingSbcInterface = true;
+		}
+	}
+#else
 #if HAS_SBC_INTERFACE && !HAS_MASS_STORAGE
 	usingSbcInterface = true;
-	FileWriteBuffer::UsingSbcMode();
+	MassStorage::ConfigureSbcBuffering();
 #endif
 
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
@@ -605,7 +642,7 @@ void RepRap::Init() noexcept
 		else if (!MassStorage::IsCardDetected(0))		// if we failed to mount the SD card because there was no card in the slot
 		{
 			usingSbcInterface = true;
-			FileWriteBuffer::UsingSbcMode();
+			MassStorage::ConfigureSbcBuffering();
 		}
 # endif
 		else
@@ -615,29 +652,80 @@ void RepRap::Init() noexcept
 		}
 	}
 #endif
+#endif
 
 #if HAS_SBC_INTERFACE
 # if defined(DUET_NG)
 	// It's the SBC build of Duet 2 firmware. Enable the PanelDue port so that the ATE can test it.
 	platform->EnablePanelDuePort();
 # endif
+# if TGBTC
+	if (usingSbcInterface)
+	{
+		if (SbcCsPinConfig == NoPin || SbcTfrReadyPinConfig == NoPin || SbcSpiChannel == SSPNONE)
+		{
+			platform->FlushMessages();
+			platform->MessageF(UsbMessage, "Disabling SBC mode no hardware interface\n");
+			usingSbcInterface = false;
+		}
+	}
+	if (usingSbcInterface)
+	{
+		FileWriteBuffer::ConfigureSbcBuffering();
+	}
+	else
+	{
+		GetSbcInterface().FreeMemory();
+#if SUPPORT_REMOTE_COMMANDS
+		if (!CanInterface::InExpansionMode() && CanExpansionAddress != 0)
+		{
+			debugPrintf("Switch to Can Expansion mode\n");
+			CanInterface::SwitchToExpansionMode(CanExpansionAddress, false);
+		}
+#endif
+	}
+# endif
 
 	if (usingSbcInterface)
 	{
 		sbcInterface->Init();
-
 		// Keep spinning until the SBC connects
+		uint32_t start = millis();
+		uint32_t seconds = 0;
 		while (!sbcInterface->IsConnected())
 		{
+			if (millis() - start >= 1000)
+			{
+				platform->MessageF(UsbMessage, "Waiting for SBC connect\n");
+				start = millis();
+				if (++seconds > 20)
+				{
+					// Force a reboot if we have not connected after 20 seconds
+					debugPrintf("Rebooting due to timeout\n");
+					delay(1000);
+					//reprap.GetPlatform().DisconnectUsb();
+					SoftwareReset(SoftwareResetReason::erase); // Reboot
+				}
+			}
+#if TGBTC
+			// At this point we may only have very limited hardware configuration loaded so avoid
+			// using the main Spin loop.
+			platform->FlushMessages();
+#if SUPPORTS_SBC_OVER_USB
+			// we need to check for gcode input to allow the SBC to enable USB mode
+			gCodes->Spin();
+#endif
+			ticksInSpinState = 0;
+#else
 			Spin();
+#endif
 		}
-
+		BoardConfig::LoadBoardConfigFromSBC();
 		// Run config.g or config.g.bak
 		if (!RunStartupFile(GCodes::CONFIG_FILE, true))
 		{
 			RunStartupFile(GCodes::CONFIG_BACKUP_FILE, true);
 		}
-
 		// runonce.g is executed by the SBC as soon as processingConfig is set to false.
 		// As we are running the SBC, save RAM by not activating the network
 	}
@@ -786,11 +874,28 @@ void RepRap::Spin() noexcept
 		case DeferredCommand::reboot:
 			SoftwareReset(SoftwareResetReason::user);
 			break;
+#if TGBTC
+		case DeferredCommand::updateFirmware:
+			RunCanIap("");
+			break;
 
+		case DeferredCommand::setAddress:
+			BoardConfig::SetSavedCanExpansionAddress(CanExpansionAddress);
+			deferredCommand = DeferredCommand::none;
+			break;
+
+#if STM32H7
+		case DeferredCommand::updateBootloader:
+			RunCanBootloaderIap("");
+			break;
+
+#endif
+#else
 		case DeferredCommand::updateFirmware:
 			UpdateFirmware(IAP_CAN_LOADER_FILE, "");
 			break;
 
+#endif
 		default:
 			deferredCommand = DeferredCommand::none;
 			break;
@@ -901,10 +1006,14 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 #ifdef DUET_NG
 			c_string_or_null const expansionName = DuetExpansion::GetExpansionBoardName();
 #endif
+
 			reply.lcatf(
 				// Format string
 				"%s"											// firmware name
-				" version %s (%s%s) running on %s"				// firmware version, date, time, electronics
+#if TGBTC
+				" (%s)"											// lpcBoardName
+#endif
+				" version %s (%s) running on %s"				// firmware version, date, time, electronics
 #ifdef DUET_NG
 				"%s%s"											// optional DueX expansion board
 #endif
@@ -915,7 +1024,10 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 
 				// Parameters to match format string
 				FIRMWARE_NAME,
-				VERSION, DateText, TimeSuffix, platform->GetElectronicsString()
+#if TGBTC
+				BoardName,
+#endif
+				VERSION, DateTimeText, platform->GetElectronicsString()
 #ifdef DUET_NG
 				, ((expansionName == nullptr) ? "" : " + ")
 				, ((expansionName == nullptr) ? "" : expansionName)
@@ -936,6 +1048,12 @@ void RepRap::GetDiagnosticsPart(unsigned int partNumber, const StringRef& reply)
 #if MCU_HAS_UNIQUE_ID
 		reply.lcat("Board ID: ");
 		platform->GetUniqueId().AppendCharsToString(reply);
+#endif
+#if TGBTC
+		if (BoardConfig::GetBootloaderString() != nullptr)
+		{
+			reply.lcatf("Bootloader: %s", BoardConfig::GetBootloaderString());
+		}
 #endif
 		break;
 
@@ -1170,6 +1288,10 @@ GCodeResult RepRap::ProcessM111(GCodeBuffer& gb, const StringRef& reply) THROWS(
 	{
 		if (module != Module::numModules)
 		{
+			if (flags != 0)
+			{
+				Platform::EnsureDebugBuffers();
+			}
 			debugMaps[module].SetFromRaw(flags);
 		}
 		else if (flags != 0)
@@ -1241,6 +1363,10 @@ GCodeResult RepRap::ProcessRemoteM111(const CanMessageGeneric& msg, const String
 	{
 		if (module < Module::numModules)
 		{
+			if (flags != 0)
+			{
+				Platform::EnsureDebugBuffers();
+			}
 			debugMaps[module].SetFromRaw(flags);
 		}
 		else if (flags != 0)
@@ -1300,7 +1426,10 @@ void RepRap::Tick() noexcept
 				// Save the stack of the stuck task when we get stuck in a spin loop
 				const uint32_t *_ecv_array relevantStackPtr;
 
-				// When a task gets stuck, sometimes we want the stack of that task and sometimes we want the stack of the running task instead
+				// When a task gets stuck, sometimes we want the stack of that task and sometimes we want the stack of the running task instead.
+				// If this is ever switched to the stuck task, move the GetStuckDiagnostics call below to relevantStackPtr + 0: that branch
+				// leaves the pointer at r0, so writing at + 3 would overwrite the link register, the program counter and xPSR, while
+				// anything from + 8 lands in the floating point registers that the reset record skips and would be lost.
 #if 1
 				// Record the stack of the running task
 				const TaskHandle relevantTask = RTOSIface::GetCurrentTask();
@@ -1325,7 +1454,7 @@ void RepRap::Tick() noexcept
 					relevantStackPtr = const_cast<const uint32_t *_ecv_array>(pxTaskGetLastStackTop(relevantTask->GetFreeRTOSHandle()));
 					// All registers were saved on the stack, so to get useful return addresses we need to skip most of them.
 					// See the port.c files in FreeRTOS for the stack layouts
-#if SAME70 || SAM4E || SAME5x
+#if SAME70 || SAM4E || SAME5x || STM32F4 || STM32H7
 					// ARM Cortex M7 with double precision floating point, or ARM Cortex M4F
 					if ((relevantStackPtr[8] & 0x10) == 0)						// test EXC_RETURN FP bit
 					{
@@ -1340,7 +1469,21 @@ void RepRap::Tick() noexcept
 					relevantStackPtr += 8;										// skip r4-r11
 #endif
 				}
-				SoftwareReset((heatTaskStuck) ? SoftwareResetReason::heaterWatchdog : SoftwareResetReason::stuckInSpin, relevantStackPtr);
+				// Record why movement stopped making progress, over the floating point registers that follow the
+				// link register, program counter and xPSR in the exception frame. The reset record keeps words 0 to 7
+				// and then skips 18, so writing here keeps the return address trail in words 8 to 26 plus a true stack
+				// pointer, and costs us s0 to s4, or five words of the task's own stack if the frame is a basic one.
+				// We never return to this task, so overwriting its frame is safe.
+				static_assert(3 + Move::NumStuckDiagnosticWords <= 8);			// anything past word 7 would be skipped
+
+				// Exception entry only reserves the floating point registers, the core writes them when the handler first
+				// uses the FPU, and the FreeRTOS port enables that lazy mode. Were it still pending it would overwrite
+				// these words from behind, so complete it here while the slots still hold nothing we want.
+#if __FPU_USED && !defined(__ECV__)
+				__asm volatile("vmov.f32 s0, s0" ::: "memory");
+#endif
+				move->GetStuckDiagnostics(const_cast<uint32_t *_ecv_array>(relevantStackPtr) + 3);
+				SoftwareReset(heatTaskStuck ? SoftwareResetReason::heaterWatchdog : SoftwareResetReason::stuckInSpin, relevantStackPtr);
 			}
 		}
 	}
@@ -1940,7 +2083,7 @@ void RepRap::SetMessage(c_string msg) noexcept
 size_t RepRap::GetStatusIndex() const noexcept
 {
 	return    (processingConfig)										? 0		// Reading the configuration file
-#if HAS_SBC_INTERFACE && SUPPORT_CAN_EXPANSION
+#if (HAS_SBC_INTERFACE || TGBTC) && SUPPORT_CAN_EXPANSION
 			: (gCodes->IsFlashing() || expansion->IsFlashing())			? 1		// Flashing a new firmware binary
 #else
 			: (gCodes->IsFlashing())									? 1		// Flashing a new firmware binary
@@ -1958,7 +2101,7 @@ size_t RepRap::GetStatusIndex() const noexcept
 			  		  : 												  9		// Printing
 			  	  	)
 			: (gCodes->IsDoingToolChange())								? 10	// Changing tool
-			: (gCodes->DoingFileMacro() || !move->NoLiveMovement() ||
+			: (gCodes->DoingFileMacro() || !move->NoLiveMovement(0) ||
 			   gCodes->WaitingForAcknowledgement() ||
 			   heat->IsTuningHeater())									? 11	// Busy
 			:															  12;	// Idle
@@ -2027,6 +2170,11 @@ void RepRap::SetName(c_string nm) noexcept
 
 // Firmware update operations
 
+#if TGBTC
+	// include code for built in loaders
+    #include "TGBTC/FirmwareUpdate.hpp"
+#endif
+
 // Check the prerequisites for updating the main firmware. Return True if satisfied, else print a message to 'reply' and return false.
 bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const StringRef& filenameRef) noexcept
 {
@@ -2039,6 +2187,7 @@ bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const Stri
 		reply.printf("Firmware binary \"%s\" not found", firmwareBinaryLocation.c_str());
 		return false;
 	}
+
 #if SAME5x
 	// UF2 files consist of 512 byte blocks with (for the SAME5x) 256 bytes of data per block
 	if ((firmwareFile->Length() / 512) * 256 > FLASH_SIZE)
@@ -2062,22 +2211,25 @@ bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const Stri
 	firmwareFile->Read(reinterpret_cast<char *_ecv_array>(&firstDword), sizeof(firstDword)) == (int)sizeof(firstDword);
 	firmwareFile->Close();
 	if (!ok || firstDword !=
-#if SAME5x
+#if TGBTC
+						(uint32_t)&_estack
+#elif SAME5x
 						HSRAM_ADDR + HSRAM_SIZE
 #else
 						IRAM_ADDR + IRAM_SIZE
 #endif
 			)
 	{
-		reply.printf("Firmware binary \"%s\" is not valid for this electronics", FIRMWARE_DIRECTORY IAP_FIRMWARE_FILE);
+		reply.printf("Firmware binary \"%s/%s\" is not valid for this electronics", FIRMWARE_DIRECTORY, IAP_FIRMWARE_FILE);
 		return false;
 	}
-
+#if !TGBTC
 	if (!platform->FileExists(FIRMWARE_DIRECTORY, IAP_UPDATE_FILE) && !platform->FileExists(DEFAULT_SYS_DIR, IAP_UPDATE_FILE))
 	{
 		reply.printf("In-application programming binary \"%s\" not found", FIRMWARE_DIRECTORY IAP_UPDATE_FILE);
 		return false;
 	}
+#endif
 #endif
 
 	return true;
@@ -2088,6 +2240,14 @@ bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const Stri
 // Update the firmware. Prerequisites should be checked before calling this.
 void RepRap::UpdateFirmware(c_string iapFilename, c_string iapParam) noexcept
 {
+#if TGBTC
+	// Check to see if we should use a built in IAP
+	if (!strcmp(iapFilename, IAP_UPDATE_FILE))
+	{
+		RunSdIap(iapParam);
+		return;
+	}
+#endif
 	FileStore *_ecv_null iapFile = platform->OpenFile(FIRMWARE_DIRECTORY, iapFilename, OpenMode::read);
 	if (iapFile == nullptr)
 	{
@@ -2127,7 +2287,7 @@ void RepRap::PrepareToLoadIap() noexcept
 	}
 
 	// Allow time for the firmware update message to be sent
-	// When the SBC is on USB, keep this short -- DSF is waiting for the next transfer response
+	// When the SBC is on USB, keep this short - DSF is waiting for the next transfer response
 	const uint32_t flushTime =
 #if HAS_SBC_INTERFACE && SUPPORTS_SBC_OVER_USB
 		(usingSbcInterface && sbcInterface->GetDataTransfer().GetTransportType() == SbcTransportType::usb) ? 100 :
@@ -2161,9 +2321,11 @@ void RepRap::PrepareToLoadIap() noexcept
 	DuetExpansion::Exit();					// stop the DueX polling task
 #endif
 	StopAnalogTask();
+#if TGBTC && HAS_SBC_INTERFACE
+	BoardConfig::InvalidateBoardConfiguration();
+#endif
 #if HAS_SBC_INTERFACE && SUPPORTS_SBC_OVER_USB
-	// Don't shut down USB yet if the SBC is connected via USB --
-	// ReceiveAndStartIap() still needs it to receive the remaining IAP chunks
+	// Don't shut down USB yet if the SBC is connected via USB - ReceiveAndStartIap() still needs it to receive the remaining IAP chunks
 	if (!usingSbcInterface || sbcInterface->GetDataTransfer().GetTransportType() != SbcTransportType::usb)
 #endif
 	{
@@ -2198,7 +2360,7 @@ void RepRap::StartIap(c_string _ecv_null filename) noexcept
 {
 	// Disable all interrupts, then reallocate the vector table and program entry point to the new IAP binary
 	// This does essentially what the Atmel AT02333 paper suggests (see 3.2.2 ff)
-
+	SERIAL_USB_DEVICE.end();
 	// Disable all IRQs
 	SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk;	// disable the system tick exception
 	IrqDisable();
@@ -2209,7 +2371,8 @@ void RepRap::StartIap(c_string _ecv_null filename) noexcept
 	}
 
 	// Disable all PIO IRQs, because the core assumes they are all disabled when setting them up
-#if !SAME5x
+
+#if !SAME5x && !STM32
 	PIOA->PIO_IDR = 0xFFFFFFFFu;
 	PIOB->PIO_IDR = 0xFFFFFFFFu;
 	PIOC->PIO_IDR = 0xFFFFFFFFu;
@@ -2221,6 +2384,28 @@ void RepRap::StartIap(c_string _ecv_null filename) noexcept
 # endif
 #endif
 
+#if TGBTC && HAS_SBC_INTERFACE
+	{
+		// We need to pass details of how to talk to the SBC to the IAP
+		const uint32_t topOfStack = *reinterpret_cast<uint32_t *>(IAP_IMAGE_START);
+		SBCIAPParams* paramsPtr = reinterpret_cast<SBCIAPParams*>(topOfStack);
+		paramsPtr->sig1 = SBCIAPParamSig;
+		if (sbcInterface->GetDataTransfer().GetTransportType() == SbcTransportType::usb)
+		{
+			paramsPtr->dev = SSPChannel::SSPNONE;
+		}
+		else
+		{
+			paramsPtr->dev = SbcSpiChannel;
+			paramsPtr->clk = SPIPins[SbcSpiChannel][0];
+			paramsPtr->miso = SPIPins[SbcSpiChannel][1];
+			paramsPtr->mosi = SPIPins[SbcSpiChannel][2];
+			paramsPtr->cs = SbcCsPin;
+			paramsPtr->tfrRdy = SbcTfrReadyPin;
+		}
+		paramsPtr->sig2 = SBCIAPParamSig;
+	}
+#else
 	// Write IapInfo struct above the stack for IAP to read
 	{
 		const uint32_t topOfStack = *reinterpret_cast<uint32_t *>(IAP_IMAGE_START);
@@ -2258,6 +2443,7 @@ void RepRap::StartIap(c_string _ecv_null filename) noexcept
 #endif
 		}
 	}
+#endif
 
 #if defined(DUET_NG) || defined(DUET_M)
 	IoPort::WriteDigital(DiagPin, !DiagOnPolarity);	// turn the DIAG LED off
@@ -2321,6 +2507,9 @@ void RepRap::StartIap(c_string _ecv_null filename) noexcept
 	(void)*(reinterpret_cast<const volatile char*>(0x20800000));
 #elif SAM3XA
 	(void)*(reinterpret_cast<const volatile char*>(0x20200000));
+#elif STM32
+	// FIXME need to test this probably not the correct address
+	(void)*(reinterpret_cast<const volatile char*>(0x00080000));
 #else
 # error Unsupported processor
 #endif

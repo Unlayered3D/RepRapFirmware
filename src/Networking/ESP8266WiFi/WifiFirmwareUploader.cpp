@@ -20,7 +20,7 @@ constexpr uint32_t Esp32FlashModuleSize = 4 * 1024 * 1024;		// assume at least 4
 // ESP8266 command codes
 const uint8_t ESP_FLASH_BEGIN = 0x02;		// Four 32-bit words: size to erase, number of data packets, data size in one packet, flash offset.
 const uint8_t ESP_FLASH_DATA = 0x03;		// Four 32-bit words: data size, sequence number, 0, 0, then data. Uses Checksum.
-const uint8_t ESP_FLASH_END = 0x04;			// One 32-bit word: 0 to reboot, 1 �run to user code�. Not necessary to send this command if you wish to stay in the loader
+const uint8_t ESP_FLASH_END = 0x04;			// One 32-bit word: 0 to reboot, 1 run to user code. Not necessary to send this command if you wish to stay in the loader
 const uint8_t ESP_MEM_BEGIN = 0x05;			// total size, number of data packets, data size in one packet, memory offset
 const uint8_t ESP_MEM_END = 0x06;			// Two 32-bit words: execute flag, entry point address
 const uint8_t ESP_MEM_DATA = 0x07;			// Four 32-bit words: data size, sequence number, 0, 0, then data. Uses Checksum.
@@ -336,7 +336,6 @@ WifiFirmwareUploader::EspUploadResult WifiFirmwareUploader::readPacket(uint8_t o
 	// Sync packets often provoke a response with a zero opcode instead of ESP_SYNC
 	if (resp != 0x01 || opRet != op)
 	{
-//debugPrintf("resp %02x %02x\n", resp, opRet);
 		return EspUploadResult::respHeader;
 	}
 
@@ -413,6 +412,7 @@ WifiFirmwareUploader::EspUploadResult WifiFirmwareUploader::doCommand(uint8_t op
 	size_t bodyLen;
 	uint32_t status;
 	EspUploadResult stat = readPacket(op, valp, bodyLen, &status, msTimeout);
+	//debugPrintf("opcode %u returned stat %x length %u status 0x%" PRIx32 "\n", op, stat, bodyLen, status);
 	if (stat == EspUploadResult::success)
 	{
 		if (espType != ESPType::unknown && bodyLen != ESP_BODY_LENGTHS[(unsigned int)espType])
@@ -561,7 +561,7 @@ WifiFirmwareUploader::EspUploadResult WifiFirmwareUploader::flashWriteBlock(uint
 	// Allocate a data buffer for the combined header and block data
 	const uint16_t dataOfst = 16;
 	const uint16_t blkBufSize = dataOfst + blkSize;
-#if !STM32
+#if !(TGBTC && STM32)
 	// On the STM32F4 our stack is not DMA capable, so we can't use the stack instead we allocate it when we open the file.
 	uint32_t blkBuf32[blkBufSize/4];
 #endif
@@ -665,7 +665,7 @@ void WifiFirmwareUploader::Spin() noexcept
 			if (connectAttemptNumber % retriesPerBaudRate == 0)
 			{
 				// First attempt at this baud rate
-				MessageF("Trying to connect at %u baud: ", baud);
+				MessageF("Trying to connect at %u baud\n", baud);
 			}
 			interface.ResetWiFiForUpload();
 			uploadPort.begin(baud);
@@ -684,6 +684,19 @@ void WifiFirmwareUploader::Spin() noexcept
 			{
 				// Successful connection
 				Identify();
+#if TGBTC
+				if (uploadFile == nullptr)
+				{
+					MessageF("WiFi Module found: %s\n", ESP_NAMES[espType]);
+					// we are just trying to identify the module type
+					// For now we assume any esp32+ is a C5, this may need to change in the future
+					NetworkModule = (espType == ESP8266 ? NetworkModuleType::esp8266 :
+										(espType == ESP32_PLUS ? NetworkModuleType::esp32c5 : NetworkModuleType::esp32));
+					uploadResult = EspUploadResult::success;
+					state = UploadState::done;
+					break;
+				}
+#endif
 				MessageF("success, found %s\n", ESP_NAMES[espType]);
 				if (espType == ESPType::ESP8266)
 				{
@@ -791,11 +804,24 @@ void WifiFirmwareUploader::Spin() noexcept
 		break;
 
 	case UploadState::done:
-		uploadFile->Close();
 		uploadPort.end();					// disable the port, it has a high interrupt priority
-#if STM32
+
+#if TGBTC
+		if (uploadFile == nullptr)
+		{
+			// we have completed trying to detect the module type. If we failed mark it as not present
+			if (uploadResult != EspUploadResult::success)
+			{
+				NetworkModule = NetworkModuleType::none;
+			}
+
+			interface.ResetWiFi();
+			state = UploadState::idle;
+			break;
+		}
 		DeleteObject(blkBuf32);
 #endif
+		uploadFile->Close();
 		if (uploadResult == EspUploadResult::success)
 		{
 			MessageF("Upload successful\n");
@@ -825,6 +851,14 @@ void WifiFirmwareUploader::Spin() noexcept
 // Try to upload the given file at the given address
 void WifiFirmwareUploader::SendUpdateFile(const char *_ecv_array file, uint32_t address) noexcept
 {
+#if TGBTC
+	// check to see if we have a valid filename, if auto discovery has failed we may not
+	if (file == nullptr || !file[0])
+	{
+		MessageF("Firmware file not specified, check module type");
+		return;
+	}
+#endif
 	Platform& platform = reprap.GetPlatform();
 	uploadFile = platform.OpenFile(FIRMWARE_DIRECTORY, file, OpenMode::read);
 	if (uploadFile == nullptr)
@@ -845,9 +879,8 @@ void WifiFirmwareUploader::SendUpdateFile(const char *_ecv_array file, uint32_t 
 		MessageF("Upload file is empty %s\n", file);
 		return;
 	}
-
-#if STM32
-	// we need a buffer that is DMA capable
+#if TGBTC && STM32
+	// we need a buffer that is DMA capable, the stack may not be
 	const uint32_t blkSize = EspFlashBlockSize;
 
 	// Allocate a data buffer for the combined header and block data
@@ -861,7 +894,6 @@ void WifiFirmwareUploader::SendUpdateFile(const char *_ecv_array file, uint32_t 
 		return;
 	}
 #endif
-
 	// Stop the network
 	restartModeOnCompletion = interface.EnableState();
 	interface.Stop();
@@ -871,6 +903,28 @@ void WifiFirmwareUploader::SendUpdateFile(const char *_ecv_array file, uint32_t 
 	connectAttemptNumber = 0;
 	state = UploadState::resetting;
 }
+
+#if TGBTC
+// Try to detect the type of WiFi module attached to the board. Should only be called
+// if the module is inactive
+void WifiFirmwareUploader::DetectWiFiModuleType() noexcept
+{
+	// Don't attempt if we do not have a serial interface to use
+	if (SerialWiFiRxTxPins[0] == NoPin || SerialWiFiRxTxPins[1] == NoPin)
+		return;
+	// Have we already worked this out?
+	if (NetworkModule != NetworkModuleType::espauto)
+	{
+		// nothing to do
+		return;
+	}
+	uploadFile = nullptr;
+	fileSize = 0;
+	interface.Stop();
+	connectAttemptNumber = 0;
+	state = UploadState::resetting;
+}
+#endif
 
 #endif	// HAS_WIFI_NETWORKING
 

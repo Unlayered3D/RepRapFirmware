@@ -83,6 +83,22 @@ constexpr Pin APIN_ESP_SPI_MISO = EspMisoPin;
 constexpr Pin APIN_ESP_SPI_SCK = EspSclkPin;
 constexpr IRQn ESP_SPI_IRQn = WiFiSpiSercomIRQn;
 
+#elif TGBTC
+# if STM32H7
+  static __nocache MessageBufferOut messageBufferOut;
+  static __nocache MessageBufferIn messageBufferIn;
+# endif
+
+# define USE_PDC            0		// use SAM4 peripheral DMA controller
+# define USE_DMAC           0		// use SAM4 general DMA controller
+# define USE_DMAC_MANAGER	0		// use SAMD/SAME DMA controller via DmacManager module
+# define USE_XDMAC          0		// use SAME7 XDMA controller
+// On TG boards we usually have a plugable WiFi module and so do not know what type it is
+// so we do not use WIFI_USES_ESP32 to control the configuration. We also do not use EspEnablePin
+// it is set to NoPin and make use of EspResetPin to reset/enable both ESP8266 and ESP32 devices
+# if WIFI_USES_ESP32
+#  error "WIFI_USES_ESP32 is not normally used on STM32 devices"
+# endif
 #else
 # error Unknown board
 #endif
@@ -99,11 +115,11 @@ constexpr IRQn ESP_SPI_IRQn = WiFiSpiSercomIRQn;
 # include "xdmac/xdmac.h"
 #endif
 
-#if !SAME5x
+#if !SAME5x && !(TGBTC && STM32)
 # include "matrix/matrix.h"
 #endif
 
-const uint32_t WiFiSlowResponseTimeoutMillis = 500;		// SPI timeout when when the ESP has to access the SPIFFS filesytem; highest measured is 234ms.
+const uint32_t WiFiSlowResponseTimeoutMillis = 3000;	// SPI timeout when the ESP has to access the SPIFFS filesytem; garbage collection on the ESP32 can take over a second
 const uint32_t WiFiFastResponseTimeoutMillis = 100;		// SPI timeout when when the ESP does not have to access SPIFFS filesystem. 20ms is too short on Duet 2 with both FTP and Telnet enabled.
 const uint32_t WiFiWaitReadyMillis = 100;
 const uint32_t WiFiStartupMillis = 15000;				// Formatting the SPIFFS partition can take up to 10s.
@@ -116,6 +132,7 @@ const uint32_t WiFiStableMillis = 100;
 
 const unsigned int MaxHttpConnections = 4;
 
+#if !TGBTC
 // Static functions
 static inline void DisableSpi() noexcept
 {
@@ -151,7 +168,7 @@ static inline void ResetSpi() noexcept
 	spi_reset(ESP_SPI);				// this clears the transmit and receive registers and puts the SPI into slave mode
 #endif
 }
-
+#endif
 static void spi_dma_disable() noexcept;
 
 #if !SAME5x
@@ -187,6 +204,10 @@ static void debugPrintBuffer(const char *_ecv_array msg, void *buf, size_t dataL
 	}
 	debugPrintf("\n");
 }
+#endif
+
+#if TGBTC
+# include "WiFiInterface.hpp"
 #endif
 
 static void EspTransferRequestIsr(CallbackParameter) noexcept
@@ -301,7 +322,7 @@ constexpr ObjectModelTableEntry WiFiInterface::objectModelTable[] =
 	{ "ssid",				OBJECT_MODEL_FUNC_IF(self->GetState() == NetworkState::active, self->actualSsid.c_str()),	ObjectModelEntryFlags::none },
 	{ "state",				OBJECT_MODEL_FUNC(self->GetStateName()),													ObjectModelEntryFlags::none },
 	{ "subnet",				OBJECT_MODEL_FUNC(self->netmask),															ObjectModelEntryFlags::none },
-	{ "type",				OBJECT_MODEL_FUNC_NOSELF("wifi"),															ObjectModelEntryFlags::none },
+	{ "type",				OBJECT_MODEL_FUNC_NOSELF("wifi"),															ObjectModelEntryFlags::verbose },
 };
 
 constexpr uint8_t WiFiInterface::objectModelTableDescriptor[] = { 1, 9 };
@@ -322,7 +343,6 @@ void WiFiInterface::Init() noexcept
 	{
 		sockets[i]->Init(i);
 	}
-
 	currentSocket = 0;
 }
 
@@ -455,7 +475,7 @@ void WiFiInterface::Activate() noexcept
 	{
 		activated = true;
 
-#if SAME70
+#if SAME70 || STM32H7
 		bufferOut = &messageBufferOut;
 		bufferIn = &messageBufferIn;
 #elif HAS_LWIP_NETWORKING && defined(DUET3MINI_V04) && !USE_MEMORY_WATCHER
@@ -474,7 +494,6 @@ void WiFiInterface::Activate() noexcept
 		bufferOut = new MessageBufferOut;
 		bufferIn = new MessageBufferIn;
 #endif
-
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		uploader = new WifiFirmwareUploader(*serialWiFiDevice, *this);
 #endif
@@ -485,6 +504,10 @@ void WiFiInterface::Activate() noexcept
 		else
 		{
 			platform.Message(UsbMessage, "WiFi is disabled.\n");
+#if TGBTC
+			// try and detect what sort of hardware we have for uploads etc.
+			if (uploader) uploader->DetectWiFiModuleType();
+#endif
 		}
 	}
 }
@@ -585,6 +608,9 @@ void WiFiInterface::Start() noexcept
 	spiTxUnderruns = spiRxOverruns = 0;
 	reconnectCount = 0;
 	transferAlreadyPendingCount = readyTimeoutCount = responseTimeoutCount = 0;
+#if TGBTC
+	badHeaderCount = actualBadHeaderCount = 0;
+#endif
 
 	lastTickMillis = millis();
 	lastDataReadyPinState = 0;
@@ -606,8 +632,9 @@ void WiFiInterface::Stop() noexcept
 #endif
 		digitalWrite(EspEnablePin, false);
 		DisableEspInterrupt();						// ignore IRQs from the transfer request pin
-
-		NVIC_DisableIRQ(ESP_SPI_IRQn);
+#if !TGBTC
+		NVIC_DisableIRQ(ESP_SPI_IRQn); // Shouldn't DisableSpi do this?
+#endif
 		DisableSpi();
 #if !SAME5x
 		spi_dma_check_rx_complete();
@@ -651,6 +678,9 @@ void WiFiInterface::Spin() noexcept
 				{
 					platform.Message(NetworkInfoMessage, "WiFi module disabled - start timed out\n");
 					SetState(NetworkState::disabled);
+#if TGBTC
+					if (uploader) uploader->DetectWiFiModuleType();
+#endif
 				}
 			}
 		}
@@ -682,6 +712,30 @@ void WiFiInterface::Spin() noexcept
 						{
 							reprap.GetPlatform().MessageF(NetworkErrorMessage, "failed to set WiFi hostname: %s\n", TranslateWiFiResponse(rc));
 						}
+#if TGBTC
+						// Set the module type based on the status response
+						if (NetworkModule == NetworkModuleType::espauto)
+						{
+							if (status.Value().moduleType != 0 && ((NetworkModuleType)(status.Value().moduleType + 1)).IsValid())
+								NetworkModule = (NetworkModuleType)(status.Value().moduleType + 1);
+							else
+								// esp32 modules do not supply the voltage
+								NetworkModule = (status.Value().vcc == 0 ? NetworkModuleType::esp32 : NetworkModuleType::esp8266);
+						}
+						// Set clock speed based on board.txt setting
+						if (WiFiClockReg != 0)
+						{
+							rc = SendCommand(NetworkCommand::networkSetClockControl, 0, 0, WiFiClockReg, nullptr, 0, nullptr, 0);
+							if (rc != ResponseEmpty)
+							{
+								reprap.GetPlatform().MessageF(NetworkErrorMessage, "failed to set WiFi SPI speed: %s\n", TranslateWiFiResponse(rc));
+							}
+							// allow time for esp to apply the new spi settings
+							DisableSpi();
+							delay(100);
+							SetupSpi();
+						}
+#endif
 
 						// If the user previously enabled TLS via M552 T1 and the WiFi module has since restarted
 						// (M997 reflash, brownout, ...), re-arm the probe so they do not have to re-issue M552 T1
@@ -705,6 +759,9 @@ void WiFiInterface::Spin() noexcept
 						// Something went wrong, maybe a bad firmware image was flashed. Disable the WiFi chip again in this case
 						Stop();
 						platform.MessageF(NetworkErrorMessage, "failed to initialise WiFi module: %s\n", TranslateWiFiResponse(rc));
+#if TGBTC
+						if (uploader) uploader->DetectWiFiModuleType();
+#endif
 					}
 				}
 			}
@@ -885,7 +942,6 @@ void WiFiInterface::Spin() noexcept
 	default:
 		break;
 	}
-
 	// Check for debug info received from the WiFi module
 	if (serialRunning)
 	{
@@ -896,7 +952,7 @@ void WiFiInterface::Spin() noexcept
 			{
 				debugPrintPending = true;
 			}
-			else if (c != '\r')
+			else if (((int)c & 0xff) >= (int)' ')
 			{
 				debugMessageBuffer[debugMessageChars++] = c;
 				if (debugMessageChars == ARRAY_SIZE(debugMessageBuffer) - 1)
@@ -952,6 +1008,9 @@ void WiFiInterface::Diagnostics(const StringRef& reply) noexcept
 					 TranslateWiFiState(currentMode),
 					 transferAlreadyPendingCount, readyTimeoutCount, responseTimeoutCount
 			   );
+#if TGBTC
+	reply.lcatf("Bad header: %u/%u", badHeaderCount, actualBadHeaderCount);
+#endif
 
 	if (GetState() != NetworkState::disabled && GetState() != NetworkState::starting1 && GetState() != NetworkState::starting2)
 	{
@@ -962,6 +1021,9 @@ void WiFiInterface::Diagnostics(const StringRef& reply) noexcept
 			NetworkStatusResponse& r = status.Value();
 			r.versionText[ARRAY_UPB(r.versionText)] = 0;
 			reply.lcatf("Firmware version %s", r.versionText);
+#if TGBTC
+			reply.catf(" (%s)", NetworkModule.ToString());
+#endif
 			reply.lcatf("Module reset reason: %s, Vcc %.2f, flash size %" PRIu32 ", free heap %" PRIu32,
 								TranslateEspResetReason(r.resetReason), (double)((float)r.vcc/1024), r.flashSize, r.freeHeap);
 			reply.lcatf("MAC address %02x:%02x:%02x:%02x:%02x:%02x",
@@ -974,9 +1036,10 @@ void WiFiInterface::Diagnostics(const StringRef& reply) noexcept
 
 			if (currentMode == WiFiState::connected)
 			{
-				constexpr const char *_ecv_array ConnectionModes[4] =  { "none", "802.11b", "802.11g", "802.11n" };
+				constexpr const char *_ecv_array ConnectionModes[16] =  { "none", "802.11b", "802.11g", "802.11n", "802.11a", "802.11ac", "802.11ax", "",
+																			"", "eth10f", "eth10h", "eth100f", "eth100h", "", "", "" };
 				reply.lcatf("Signal strength %ddBm, channel %u, mode %s, reconnections %u",
-											(int)r.rssi, r.channel, ConnectionModes[r.phyMode], reconnectCount);
+											(int)r.rssi, r.channel == 0 ? r.channel5G : r.channel, ConnectionModes[r.phyMode], reconnectCount);
 			}
 			else if (currentMode == WiFiState::runningAsAccessPoint)
 			{
@@ -1376,7 +1439,12 @@ GCodeResult WiFiInterface::HandleWiFiCode(int mcode, GCodeBuffer &gb, const Stri
 		reply.copy("use M552 to abandon the current connection attempt before using this command");
 		return GCodeResult::error;
 	}
-
+	if (requestedMode != currentMode)
+	{
+			reply.copy("module is changing mode please try again later");
+		return GCodeResult::error;
+	}
+	
 	switch (mcode)
 	{
 	case 587:	// Add WiFi network or list remembered networks
@@ -1438,6 +1506,7 @@ GCodeResult WiFiInterface::HandleWiFiCode(int mcode, GCodeBuffer &gb, const Stri
 						gb.GetIPAddress(temp);
 						config.netmask = temp.GetV4LittleEndian();
 					}
+					config.channel = (gb.Seen('C')) ? gb.GetIValue() : 0;
 
 					if (config.eap.protocol != EAPProtocol::NONE)
 					{
@@ -1970,6 +2039,8 @@ void WiFiInterface::TerminateDataPort() noexcept
 	}
 }
 
+#if !TGBTC
+
 #if USE_PDC
 static Pdc *spi_pdc;
 #endif
@@ -2304,6 +2375,8 @@ void WiFiInterface::SetupSpi() noexcept
 	NVIC_EnableIRQ(ESP_SPI_IRQn);
 }
 
+#endif //end ifndef TGBTC
+
 // Send a command to the ESP and get the result
 int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, uint8_t flags, uint32_t param32, const void *_ecv_null dataOut, size_t dataOutLength, void *_ecv_null dataIn, size_t dataInLength) noexcept
 {
@@ -2384,6 +2457,8 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 	WiFiSpiSercom->SPI.INTFLAG.reg = 0xFF;						// clear any pending interrupts
 	WiFiSpiSercom->SPI.INTENSET.reg = SERCOM_SPI_INTENSET_TXC;	// enable the end of transmit interrupt. From the datasheet: "In Slave mode, this flag is set when the _SS pin is pulled high."
 	EnableSpi();
+#elif TGBTC
+    spi_slave_dma_setup(dataOutLength, dataInLength);
 #else
     // DMA may have transferred an extra word to the SPI transmit data register. We need to clear this.
 	// On the SAM4E the only way I can find to do this is to issue a software reset to the SPI system.
@@ -2496,7 +2571,26 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 		{
 			debugPrintf("bad format version %02x\n", bufferIn->hdr.formatVersion);
 		}
-		return ResponseBadReplyFormatVersion;
+#if TGBTC
+		// For some reason I don't understand when using the ESP32 with DMA seems to result in a very
+		// occasaional packet with formatVersion == 0. We check for that here and allow it if a second
+		// header field has the correct value. 
+		badHeaderCount++;
+		if (bufferIn->hdr.formatVersion != 0 || bufferIn->hdr.dummy32 != 0xdeadbeef || bufferIn->hdr.state > WiFiState::reconnecting)
+		{
+			debugPrintf("bad format version %02x %02x\n", bufferIn->hdr.formatVersion, MyFormatVersion);
+			uint8_t *p = (uint8_t *)bufferIn;
+			for(int i=0; i < 16; i++)
+				debugPrintf("byte %d val %02x\n", i, p[i]);
+			if (reprap.Debug(Module::Network))
+			{
+				debugPrintf("bad format version %02x\n", bufferIn->hdr.formatVersion);
+			}
+			debugPrintf("bad format version2 %02x %02x\n", bufferIn->hdr.formatVersion, MyFormatVersion);
+			actualBadHeaderCount++;
+			return ResponseBadReplyFormatVersion;
+		}
+#endif
 	}
 
 	if (   (bufferIn->hdr.state == WiFiState::autoReconnecting || bufferIn->hdr.state == WiFiState::reconnecting)
@@ -2595,6 +2689,7 @@ void WiFiInterface::GetNewStatus() noexcept
 	}
 }
 
+#if !TGBTC
 #if SAME5x
 
 /*static*/ void WiFiInterface::CommonSpiInterrupt(void *param) noexcept
@@ -2661,6 +2756,8 @@ inline void WiFiInterface::SpiInterrupt() noexcept
 	}
 }
 
+#endif //if !TGBTC
+
 // Start the ESP
 void WiFiInterface::StartWiFi() noexcept
 {
@@ -2670,9 +2767,17 @@ void WiFiInterface::StartWiFi() noexcept
 #endif
 
 	digitalWrite(EspEnablePin, true);
+#if TGBTC
+	if(!serialWiFiDevice->Configure(SerialWiFiRxTxPins[0], SerialWiFiRxTxPins[1]))
+	{
+		reprap.GetPlatform().MessageF(UsbMessage, "Failed to set WIFI Serial with pins %c.%d and %c.%d.\n", 'A'+(SerialWiFiRxTxPins[0] >> 4), (SerialWiFiRxTxPins[0] & 0xF), 'A'+(SerialWiFiRxTxPins[1] >> 4), (SerialWiFiRxTxPins[1] & 0xF) );
+	}
+#endif
 
 #if WIFI_USES_ESP32
 	serialWiFiDevice->begin(WiFiBaudRate_ESP32);				// initialise the UART, to receive debug info
+#elif defined(DUET3MINI_V04)
+	serialWiFiDevice->begin(platform.HasESP32() ? WiFiBaudRate_ESP32 : WiFiBaudRate);	// the Mini 5+ takes either module type, detected at startup
 #else
 	serialWiFiDevice->begin(WiFiBaudRate);						// initialise the UART, to receive debug info
 #endif
@@ -2690,10 +2795,6 @@ void WiFiInterface::ResetWiFi() noexcept
 
 	SetPinMode(EspEnablePin, OUTPUT_LOW);
 
-#if !defined(SAME5x)
-	pinMode(APIN_SerialWiFi_TXD, INPUT_PULLUP);					// just enable pullups on TxD and RxD pins
-	pinMode(APIN_SerialWiFi_RXD, INPUT_PULLUP);
-#endif
 	currentMode = WiFiState::disabled;
 
 	if (serialRunning)
@@ -2709,6 +2810,28 @@ void WiFiInterface::ResetWiFi() noexcept
 // 0		1		0		Firmware download from UART
 // 1		1		0		Normal boot from flash memory
 // 0		0		1		SD card boot (not used in on Duet)
+// Pin assignments GPIO0: EspDataReadyPin GPIO2: Pulled high GPIO15: SamCsPin 
+// For ESP32 chips the reset logic is
+// GPIO0	GPIO2
+// 0		0				Firmware download from UART
+// 1		Any				Normal boot from flash memory
+// Pin assignments GPIO0: EspDataReadyPin GPIO2: SamCsPin
+// For ESP32C5 chips the reset logic is
+// GPIO26	GPIO27	GPIO28
+// Any		Any		1		Normal boot from flash memory
+// Any		1		0		Boot from UART/USB/SPI
+// 0		0		0		Boot from UART/SDIO
+// Pin assignments GPIO26 pulled high GPIO27: SamTfrReadyPin GPIO28: EspDataReadyPin
+// For ESP32C3 chips the reset logic is
+// GPIO2	GPIO8	GPIO9
+// 1		Any		1		Normal boot from flash memory
+// 1		1		0		Boot from UART/USB
+// Pin assignments GPIO2: pulled high GPIO8: pulled high GPIO9: EspDataReadyPin
+// For ESP32S3 chips the reset logic is
+// GPIO0	GPIO46
+// 1		Any				Normal boot from flash memory
+// 0		0				Boot from UART/USB
+// Pin assignments GPIO0: EspDataReadyPin GPIO46: pulled low
 void WiFiInterface::ResetWiFiForUpload() noexcept
 {
 	if (serialRunning)
@@ -2718,24 +2841,25 @@ void WiFiInterface::ResetWiFiForUpload() noexcept
 	}
 
 #if !WIFI_USES_ESP32
-	// Make sure the ESP8266 is in the reset state
+	// Make sure the module is in the reset state
 	SetPinMode(EspResetPin, OUTPUT_LOW);
 #endif
 
-	// Power down the ESP8266
+	// Power down the module (not used on STM32)
 	SetPinMode(EspEnablePin, OUTPUT_LOW);
 
-	// Set up our transfer request pin (GPIO4) as an output and set it low
-	SetPinMode(SamTfrReadyPin, OUTPUT_LOW);
+	// For ESP32C5 we need to set the SamTfrReadyPin high to configure the bootloader
+	SetPinMode(SamTfrReadyPin, OUTPUT_HIGH);
 
-	// Set up our data ready pin (ESP GPIO0) as an output and set it low ready to boot the ESP from UART
+	// Set up our data ready pin as an output and set it low ready to boot the ESP from UART
 	SetPinMode(EspDataReadyPin, OUTPUT_LOW);
 
 	// GPIO2 also needs to be high to boot up. It's connected to MISO on the SAM, so set the pullup resistor on that pin
+	// NOTE: I'm not sure if this is actually true anymore on any WiFi modules, but it does not do any harm
 	SetPinMode(APIN_ESP_SPI_MISO, INPUT_PULLUP);
 
 #if !WIFI_USES_ESP32
-	// Set our CS input (ESP GPIO15) low ready for booting the ESP. This also clears the transfer ready latch.
+	// Set our CS input low ready for booting the ESP. This also clears the transfer ready latch.
 	SetPinMode(SamCsPin, OUTPUT_LOW);
 #endif
 
@@ -2743,12 +2867,11 @@ void WiFiInterface::ResetWiFiForUpload() noexcept
 	delay(50);
 
 #if !WIFI_USES_ESP32
-	// Release the reset on the ESP8266
+	// Release the reset
 	digitalWrite(EspResetPin, true);
 	delayMicroseconds(150);											// ESP8266 datasheet specifies minimum 100us from releasing reset to power up
 #endif
-
-	// Take the ESP8266 out of power down
+	// Take the module out of power down (not used on STM32)
 	digitalWrite(EspEnablePin, true);
 }
 

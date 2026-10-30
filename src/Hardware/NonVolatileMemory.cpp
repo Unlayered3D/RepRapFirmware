@@ -13,6 +13,7 @@
 # include <RTOSIface/RTOSIface.h>
 #endif
 
+
 NonVolatileMemory::NonVolatileMemory() noexcept : state(NvmState::notRead)
 {
 }
@@ -23,6 +24,8 @@ void NonVolatileMemory::EnsureRead() noexcept
 	{
 #if SAME5x
 		memcpyu32(reinterpret_cast<uint32_t*>(&buffer), reinterpret_cast<const uint32_t *>(SEEPROM_ADDR), sizeof(buffer)/sizeof(uint32_t));
+#elif TGBTC
+		NVMEmulationRead(&buffer, sizeof(buffer));
 #elif SAM4E || SAM4S || SAME70
 		Flash::ReadUserSignature(reinterpret_cast<uint32_t*>(&buffer), sizeof(buffer)/sizeof(uint32_t));
 #else
@@ -60,6 +63,8 @@ void NonVolatileMemory::EnsureWritten() noexcept
 		// Erase the page
 # if SAM4E || SAM4S || SAME70
 		Flash::EraseUserSignature();
+# elif TGBTC
+		NVMEmulationErase();
 # endif
 		state = NvmState::writeNeeded;
 	}
@@ -73,6 +78,8 @@ void NonVolatileMemory::EnsureWritten() noexcept
 		{
 			Cache::Enable();
 		}
+# elif TGBTC
+		NVMEmulationWrite(&buffer, sizeof(buffer));
 # else
 #  error Unsupported processor
 # endif
@@ -169,4 +176,27 @@ void NonVolatileMemory::SetThermistorCalibration(unsigned int inputNumber, int8_
 	}
 }
 
+#if TGBTC && SUPPORT_REMOTE_COMMANDS
+void NonVolatileMemory::SetCanExpansionAddress(CanAddress addr) noexcept
+{
+	EnsureRead();
+	const uint8_t oldVal = buffer.canExpansionAddress;
+	if (oldVal != addr)
+	{
+		buffer.canExpansionAddress = addr;
+		if ((addr & ~oldVal) != 0)
+			state = NvmState::eraseAndWriteNeeded;
+		else if (state == NvmState::clean)
+		{
+			state = NvmState::writeNeeded;
+		}
+	}
+}
+
+CanAddress NonVolatileMemory::GetCanExpansionAddress() noexcept
+{
+	EnsureRead();
+	return buffer.canExpansionAddress;
+}
+#endif
 // End

@@ -1364,6 +1364,8 @@ void HttpResponder::ProcessRequest() noexcept
 							break;
 						}
 					}
+					// Allow us to be called directly during the upload
+					skt->SetResponder(this);
 					return;
 				}
 			}
@@ -1417,29 +1419,33 @@ void HttpResponder::DoUpload() noexcept
 	size_t len;
 	if (skt->ReadBuffer(buffer, len))
 	{
-		size_t bytesWritten = 0;		// don't write than one FS buffer at once, else we may get stuck here with slow cards
 		do
 		{
 			(void)CheckAuthenticated();						// uploading may take a long time, so make sure the requester IP is not timed out
 			timer = millis();								// reset the timer
-
-			const bool ok = dummyUpload || fileBeingUploaded.Write(buffer, len);
+			if (!dummyUpload)
+			{
+				// Check to see how much we can write, this avaoid blocking when using a 
+				// writer task and provides better throughput
+				size_t canWrite = (size_t)fileBeingUploaded.CanWrite();
+				if (canWrite == 0) break;
+				if (len > canWrite) len = canWrite;
+				if (!fileBeingUploaded.Write(buffer, len))
+				{
+					uploadError = true;
+					GetPlatform().Message(ErrorMessage, "HTTP: could not write upload data\n");
+					CancelUpload();
+					SendJsonResponse("upload");
+					return;
+				}
+			}
 			skt->Taken(len);
 			uploadedBytes += len;
-			bytesWritten += len;
-
-			if (!ok)
-			{
-				uploadError = true;
-				GetPlatform().Message(ErrorMessage, "HTTP: could not write upload data\n");
-				CancelUpload();
-				SendJsonResponse("upload");
-				return;
-			}
-		} while (bytesWritten < FileWriteBufLen && skt->ReadBuffer(buffer, len));
+		} while (skt->ReadBuffer(buffer, len));
 	}
 	else if (!skt->CanRead() || millis() - timer >= HttpSessionTimeout)
 	{
+		debugPrintf("upload failed expected len %u actual %u\n", (unsigned)postFileLength, (unsigned)uploadedBytes);
 		// Sometimes uploads can get stuck; make sure they are cancelled when that happens
 		ConnectionLost();
 		return;
@@ -1652,6 +1658,8 @@ void HttpResponder::Diagnostics(const StringRef& reply) const noexcept
 /*static*/ void HttpResponder::CommonDiagnostics(const StringRef& reply) noexcept
 {
 	reply.lcatf("HTTP sessions: %u of %u", numSessions, MaxHttpSessions);
+	reply.lcatf("Uploads/Errors: %u/%u", numUploads, numUploadErrors);
+	numUploads = numUploadErrors = 0;
 }
 
 void HttpResponder::AddCorsHeader() noexcept

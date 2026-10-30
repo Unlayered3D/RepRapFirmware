@@ -188,6 +188,10 @@ private:
 	unsigned int transferAlreadyPendingCount = 0;
 	unsigned int readyTimeoutCount = 0;
 	unsigned int responseTimeoutCount = 0;
+#if TGBTC
+	unsigned int badHeaderCount = 0;
+	unsigned int actualBadHeaderCount = 0;
+#endif
 
 	String<StringLength20> wiFiServerVersion;
 

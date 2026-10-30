@@ -19,7 +19,7 @@ namespace Tasks
 	void TerminateMainTask() noexcept;
 	ptrdiff_t GetNeverUsedRam() noexcept;
 	void *AllocPermanent(size_t sz, std::align_val_t align = (std::align_val_t)
-#if SAME70
+#if SAME70 || STM32H7
 		__STDCPP_DEFAULT_NEW_ALIGNMENT__
 #else
 		// gcc defines __STDCPP_DEFAULT_NEW_ALIGNMENT__ as 8, which is wasteful of memory on ARM Cortex M4 processors

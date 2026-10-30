@@ -11,7 +11,7 @@
 #include <Platform/Platform.h>
 #include <General/Portability.h>
 
-extern uint32_t _estack;			// defined in the linker script
+extern uint8_t _estack;			// defined in the linker script
 
 // The following must be kept in line with enum class SoftwareResetReason
 const char *_ecv_array const SoftwareResetData::ReasonText[] =
@@ -91,7 +91,7 @@ void SoftwareResetData::Populate(uint16_t reason, const uint32_t *_ecv_array _ec
 	}
 	else
 	{
-		const char *_ecv_array stackLimit = (currentTask == nullptr) ? sysStackLimit : (const char *_ecv_array)currentTask + sizeof(TaskBase);
+		const char *_ecv_array stackLimit = (currentTask == nullptr) ? reinterpret_cast<const char *_ecv_array>(sysStackLimit) : (const char *_ecv_array)currentTask + sizeof(TaskBase);
 		stackOffset = (uint32_t)((const char *_ecv_array)stk - stackLimit) >> 2;
 		stackMarkerValid = stackLimit[0] == 0xA5 && stackLimit[3] == 0xA5;
 		spare = 0;
@@ -103,7 +103,7 @@ void SoftwareResetData::Populate(uint16_t reason, const uint32_t *_ecv_array _ec
 				stk += 18;				// skip the FP registers
 			}
 #endif
-			stack[i] = (stk < &_estack) ? *stk++ : 0xFFFFFFFFu;
+			stack[i] = (stk < (const uint32_t*)sysStackTop) ? *stk++ : 0xFFFFFFFFu;
 		}
 	}
 }

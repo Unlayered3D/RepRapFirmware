@@ -141,7 +141,8 @@ void GCodeBuffer::Reset() noexcept
 	requestedMacroFile.Clear();
 	macroFileClosed = false;
 	isWaitingForMacro = false;
-	macroJustStarted = macroFileError = macroFileEmpty = abortFile = abortAllFiles = sendToSbc = messagePromptPending = messageAcknowledged = false;
+	macroJustStarted = macroFileError = macroFileEmpty = false;
+	abortFile = abortAllFiles = sendToSbc = messagePromptPending = messageAcknowledged = false;
 	machineState->lastCodeFromSbc = machineState->macroStartedByCode = false;
 #endif
 	cancelWait = false;
@@ -160,6 +161,12 @@ void GCodeBuffer::Init() noexcept
 #if SUPPORT_ASYNC_MOVES
 	syncState = SyncState::running;
 #endif
+}
+
+// Throw away any line that we have only partly received. Binary codes are always received in one piece, so only the string parser can hold one
+void GCodeBuffer::DiscardPartialLine() noexcept
+{
+	stringParser.DiscardPartialLine();
 }
 
 void GCodeBuffer::StartTimer() noexcept
@@ -293,6 +300,7 @@ bool GCodeBuffer::Put(char c) noexcept
 // Decode the command in the buffer when it is complete
 void GCodeBuffer::DecodeCommand() noexcept
 {
+	restoredCommandValid = false;
 	PARSER_OPERATION(DecodeCommand());
 }
 
@@ -308,6 +316,7 @@ bool GCodeBuffer::CheckMetaCommand(const StringRef& reply) THROWS(GCodeException
 // CAUTION! This may be called with the task scheduler suspended, so don't do anything that might block or take more than a few microseconds to execute
 void GCodeBuffer::PutBinary(const uint32_t *data, size_t len) noexcept
 {
+	restoredCommandValid = false;
 	machineState->lastCodeFromSbc = true;
 	isBinaryBuffer = true;
 	macroJustStarted = false;
@@ -319,6 +328,7 @@ void GCodeBuffer::PutBinary(const uint32_t *data, size_t len) noexcept
 // Add an entire G-Code, overwriting any existing content
 void GCodeBuffer::PutAndDecode(const char *_ecv_array str, size_t len) noexcept
 {
+	restoredCommandValid = false;
 #if HAS_SBC_INTERFACE
 	machineState->lastCodeFromSbc = false;
 	isBinaryBuffer = false;
@@ -329,6 +339,7 @@ void GCodeBuffer::PutAndDecode(const char *_ecv_array str, size_t len) noexcept
 // Add a null-terminated string, overwriting any existing content
 void GCodeBuffer::PutAndDecode(const char *_ecv_array str) noexcept
 {
+	restoredCommandValid = false;
 #if HAS_SBC_INTERFACE
 	machineState->lastCodeFromSbc = false;
 	isBinaryBuffer = false;
@@ -354,17 +365,17 @@ bool GCodeBuffer::FileEnded() noexcept
 
 char GCodeBuffer::GetCommandLetter() const noexcept
 {
-	return PARSER_OPERATION(GetCommandLetter());
+	return (restoredCommandValid) ? restoredCommandLetter : PARSER_OPERATION(GetCommandLetter());
 }
 
 bool GCodeBuffer::HasCommandNumber() const noexcept
 {
-	return PARSER_OPERATION(HasCommandNumber());
+	return (restoredCommandValid) ? restoredHasCommandNumber : PARSER_OPERATION(HasCommandNumber());
 }
 
 int GCodeBuffer::GetCommandNumber() const noexcept
 {
-	return PARSER_OPERATION(GetCommandNumber());
+	return (restoredCommandValid) ? restoredCommandNumber : PARSER_OPERATION(GetCommandNumber());
 }
 
 void GCodeBuffer::GetCompleteParameters(const StringRef& str) THROWS(GCodeException)
@@ -374,7 +385,7 @@ void GCodeBuffer::GetCompleteParameters(const StringRef& str) THROWS(GCodeExcept
 
 int8_t GCodeBuffer::GetCommandFraction() const noexcept
 {
-	return PARSER_OPERATION(GetCommandFraction());
+	return (restoredCommandValid) ? restoredCommandFraction : PARSER_OPERATION(GetCommandFraction());
 }
 
 #if SUPPORT_ASYNC_MOVES
@@ -1047,8 +1058,33 @@ bool GCodeBuffer::PushState(bool withinSameFile) noexcept
 	}
 
 	machineState = new GCodeMachineState(*machineState, withinSameFile);
+	if (!withinSameFile)
+	{
+		SaveInvokingCommand();
+	}
 	reprap.InputsUpdated();
 	return true;
+}
+
+// Remember in the newly-pushed macro frame which command invoked it, so that RestoreInvokingCommand can reinstate it when the frame is popped.
+// Use our own getters so that a still-active restored command (from an enclosing macro) is carried through nested macros
+void GCodeBuffer::SaveInvokingCommand() noexcept
+{
+	machineState->savedCommandLetter = GetCommandLetter();
+	machineState->savedCommandNumber = GetCommandNumber();
+	machineState->savedCommandFraction = GetCommandFraction();
+	machineState->savedHasCommandNumber = HasCommandNumber();
+}
+
+// Reinstate the command that invoked a macro frame after that frame has been popped. The command getters return these values until the next
+// command is parsed, which covers both parsers since the binary parser otherwise reports the macro's last command from the code header
+void GCodeBuffer::RestoreInvokingCommand(const GCodeMachineState& ms) noexcept
+{
+	restoredCommandLetter = ms.savedCommandLetter;
+	restoredCommandNumber = ms.savedCommandNumber;
+	restoredCommandFraction = ms.savedCommandFraction;
+	restoredHasCommandNumber = ms.savedHasCommandNumber;
+	restoredCommandValid = true;
 }
 
 // Pop state returning true if successful (i.e. no stack underrun)
@@ -1066,6 +1102,10 @@ bool GCodeBuffer::PopState(bool withinSameFile) noexcept
 		}
 
 		poppedFileState = !ms->localPush;
+		if (poppedFileState)
+		{
+			RestoreInvokingCommand(*ms);
+		}
 		machineState = ms->Pop();						// get the previous state and copy down any error message
 		delete ms;
 	} while (!withinSameFile && !poppedFileState);
@@ -1207,8 +1247,8 @@ bool GCodeBuffer::RequestMacroFile(const char *filename, bool fromCode) noexcept
 		// Don't wait for a macro file if no SBC is connected
 		return false;
 	}
-
 	// Request the macro file from the SBC
+	MutexLocker lock(mutex);								// the SBC task reads the request while holding this mutex
 	macroJustStarted = macroFileError = macroFileEmpty = false;
 	machineState->macroStartedByCode = fromCode;
 	requestedMacroFile.copy(filename);
@@ -1219,12 +1259,16 @@ bool GCodeBuffer::RequestMacroFile(const char *filename, bool fromCode) noexcept
 	{
 		// Wait for a response (but not forever)
 		isWaitingForMacro = true;
+		lock.Release();										// don't keep a lock of our own while waiting for the SBC
 		reprap.GetSbcInterface().EventOccurred(true);
 		if (!macroSemaphore.Take(SbcMaxRequestTime))
 		{
 			isWaitingForMacro = false;
-			reprap.GetPlatform().MessageF(ErrorMessage, "Timeout while waiting for macro file %s (channel %s)\n", filename, GetChannel().ToString());
-			return false;
+			if (!macroSemaphore.Take(0))		// a reply that came in before the flag was cleared still answers this request
+			{
+				reprap.GetPlatform().MessageF(ErrorMessage, "Timeout while waiting for macro file %s (channel %s)\n", filename, GetChannel().ToString());
+				return false;
+			}
 		}
 	}
 

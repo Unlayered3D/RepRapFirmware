@@ -42,6 +42,21 @@ NamedEnum(HeaterStatus, uint8_t, off, standby, active, fault, tuning, offline);
 class Heater INHERIT_OBJECT_MODEL
 {
 public:
+	// Enumeration to describe the heater tuning phases
+	enum class TuningPhase : uint8_t
+	{
+		checking_temperature_is_stable,
+		calibrating_heater,
+		heating_up,
+		settling,
+		measuring,
+#if TUNE_WITH_HALF_FAN
+		measuring_with_50pc_fan,
+#endif
+		measuring_with_fan_on,
+		numPhases
+	};
+
 	explicit Heater(unsigned int num) noexcept;
 	virtual ~Heater() noexcept override;
 	Heater(const Heater &_ecv_from) = delete;
@@ -84,7 +99,7 @@ public:
 
 	const FopDt& GetModel() const noexcept { return model; }				// Get the process model
 	GCodeResult SetOrReportModel(unsigned int heater, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
-	void SetExtrusionFeedForward(float pwmBoost, float tempBoost) noexcept;
+	void SetExtrusionFeedForward(float pwmBoost, float tempBoost, bool isNonPrintingMove) noexcept;
 
 #if SUPPORT_REMOTE_COMMANDS
 	virtual GCodeResult TuningCommand(const CanMessageHeaterTuningCommand& msg, const StringRef& reply) noexcept = 0;
@@ -134,7 +149,7 @@ protected:
 	virtual GCodeResult UpdateFaultDetectionParameters(const StringRef& reply) noexcept = 0;
 	virtual GCodeResult UpdateHeaterMonitors(const StringRef& reply) noexcept = 0;
 	virtual GCodeResult StartAutoTune(const StringRef& reply, bool seenA, float ambientTemp) noexcept = 0;
-	virtual void ApplyExtrusionFeedForward() noexcept = 0;
+	virtual void ApplyExtrusionFeedForward(float newExtrusionPwmBoost, float newTempBoost, bool isNonPrintingMove) noexcept = 0;
 
 	int GetSensorNumber() const noexcept { return sensorNumber; }
 	int GetAmbientSensorNumber() const noexcept { return ambientSensorNumber; }
@@ -149,15 +164,16 @@ protected:
 
 	GCodeResult SetModel(float hr, float bcr, float fcr, float coolingRateExponent, float td, float maxPwm, float voltage, bool usePid, bool inverted, const StringRef& reply) noexcept;
 																	// set the process model
-	void ReportTuningUpdate() noexcept;								// tell the user what's happening
+	void ReportTuningUpdate(bool skipping = false) noexcept;		// tell the user what's happening
 	void CalculateModel(HeaterParameters& params) noexcept;			// calculate G, td and tc from the accumulated readings
 	void SetAndReportModelAfterTuning(bool usingFans) noexcept;
 
 	HeaterMonitor monitors[MaxMonitorsPerHeater];					// embedding them in the Heater uses less memory than dynamic allocation
+
 	volatile float lastFanPwm;										// The fan PWM when we last calculated heater feedforward for the fan
-	volatile float extrusionPwmBoost;								// The value of extrusion PWM boost to apply
+	volatile float lastExtrusionPwmBoost;							// The last value of extrusion boost we applied
+	volatile float allowedExtrusionPwmBoost;						// The maximum extra PWM that we expect to need if extrusion is taking place due to melting filament
 	volatile float extrusionTemperatureBoost;						// the amount of extrusion temperature boost we are currently applying
-	float previousExtrusionPwmBoost;								// The previoius value of extrusion boost we applied
 
 	bool tuned = false;												// true if tuning was successful
 
@@ -173,7 +189,7 @@ protected:
 	static constexpr float DefaultTuningHysteresis = 5.0;
 	static constexpr float MaxTuningHysteresis = 20.0;
 	static constexpr float MinTuningFanPwm = 0.1;
-	static constexpr float DefaultTuningFanPwm = 0.7;
+	static constexpr float DefaultTuningFanPwm = 0.8;				// changed from 0.7 to 0.8 post 3.7.0-rc.1 to get more accurate results across the PWM range
 	static constexpr float TuningPeakTempDrop = 2.0;				// must be well below TuningHysteresis
 	static constexpr float HeaterSettledCoolingTimeRatio = 0.93;
 
@@ -201,8 +217,9 @@ protected:
 	static uint32_t afterPeakTime;									// the time at which we recorded afterPeakTemp
 	static float lastCoolingRate;
 	static FansBitmap tuningFans;
-	static unsigned int tuningPhase;
+	static TuningPhase tuningPhase;
 	static uint8_t idleCyclesDone;
+	static uint8_t cyclesToSkip;
 	static bool tuningQuietMode;
 
 	static HeaterParameters fanOffParams, fanOnParams;
@@ -213,8 +230,6 @@ protected:
 	float maxHeatingFaultTime = DefaultMaxHeatingFaultTime;				// how long a heater fault is permitted to persist before a heater fault is raised
 
 private:
-	static const char *_ecv_array const TuningPhaseText[];
-
 	unsigned int heaterNumber;
 	int sensorNumber = -1;												// the sensor number used by this heater
 	int ambientSensorNumber = -1;										// the ambient sensor number used by this heater, if any

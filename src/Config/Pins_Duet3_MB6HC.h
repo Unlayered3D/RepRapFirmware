@@ -4,17 +4,18 @@
 #include <PinDescription.h>
 #include <SPI/SpiParameters.h>
 #include <UART/UartParameters.h>
+#include <CanParameters.h>
 
-#define BOARD_SHORT_NAME		"MB6HC"
-#define BOARD_NAME				"Duet 3 MB6HC"
-#define DEFAULT_BOARD_TYPE		BoardType::Auto
-#define FIRMWARE_NAME			"RepRapFirmware for Duet 3 MB6HC"
-#define IAP_FIRMWARE_FILE		"Duet3Firmware_" BOARD_SHORT_NAME ".bin"
+# define BOARD_SHORT_NAME		"MB6HC"
+# define BOARD_NAME				"Duet 3 MB6HC"
+# define DEFAULT_BOARD_TYPE		BoardType::Auto
+# define FIRMWARE_NAME			"RepRapFirmware for Duet 3 MB6HC"
+# define IAP_FIRMWARE_FILE		"Duet3Firmware_" BOARD_SHORT_NAME ".bin"
+constexpr uint32_t IAP_IMAGE_START = 0x20458000;		// last 32kb of RAM on a SAME70Q20B
 
 #define IAP_UPDATE_FILE			"Duet3_SDiap32_" BOARD_SHORT_NAME ".bin"
 #define IAP_UPDATE_FILE_SBC		"Duet3_SBCiap32_" BOARD_SHORT_NAME ".bin"
 #define IAP_CAN_LOADER_FILE		"Duet3_CANiap32_" BOARD_SHORT_NAME ".bin"
-constexpr uint32_t IAP_IMAGE_START = 0x20458000;		// last 32kb of RAM
 
 #define WIFI_FIRMWARE_FILE		"DuetWiFiModule_32S3.bin"
 
@@ -25,7 +26,7 @@ constexpr uint32_t IAP_IMAGE_START = 0x20458000;		// last 32kb of RAM
 #define WIFI_USES_ESP32			1
 
 #ifndef NO_S_CURVE
-# define SUPPORT_S_CURVE		1		// by default we support 3rd-order motion control on the 6HC
+# define SUPPORT_3RD_ORDER		1		// by default we support 3rd-order motion control on the 6HC
 #endif
 
 // Storage support
@@ -183,6 +184,17 @@ constexpr SpiParameters SharedSpiParams =
 };
 
 constexpr Pin UsbVBusPin = PortCPin(21);			// Pin used to monitor VBUS on USB port
+
+// I2C
+// Hardware I2C runs on the IO2 connector via TWIHS2: SDA on io2.out (PD27), SCL on io2.in (PD28).
+// Using IO2 for I2C requires the 470R bypass jumper on io2.in to be fitted, which is only present on board revision v1.02 and later.
+// Defining I2C_IFACE enables the M260/M261 commands; on this board the bus is driven by a SharedI2CMaster, see CoreN2G.
+#define I2C_IFACE	SharedI2CMaster
+constexpr uint8_t I2CInstanceNumber = 2;					// using TWIHS2
+constexpr Pin I2CSclPin = PortDPin(28);						// io2.in, requires the 470R bypass jumper
+constexpr Pin I2CSdaPin = PortDPin(27);						// io2.out
+constexpr GpioPinFunction I2CPinFunction = GpioPinFunction::C;
+constexpr const char *I2CBusPinNames = "i2c0.clk+i2c0.dat";	// names used to reserve the bus pins so they can't also be allocated as GPIO
 
 // Drivers
 constexpr Pin STEP_PINS[NumDirectDrivers] =			{ PortCPin(18), PortCPin(16), PortCPin(28), PortCPin(01), PortCPin(04), PortCPin(9) };
@@ -420,8 +432,8 @@ constexpr PinDescription PinTable[] =
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr				},	// PD24 SWD_EXT_RST
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io0.in,serial0.rx"	},	// PD25 IO0_IN  Serial0 RX
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io0.out,serial0.tx"},	// PD26 IO0_OUT Serial0 TX
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io2.out,i2c0.dat"	},	// PD27 IO2_OUT
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io2.in,i2c0.clk"	},	// PD28 IO2_IN
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io2.out,i2c0.dat"	},	// PD27 IO2_OUT also I2C SDA
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io2.in,i2c0.clk"	},	// PD28 IO2_IN also I2C SCL
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr				},	// PD29 driver 0 diag
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc0_0,	PinCapability::ainr,	"io4.in"			},	// PD30 IO4_IN
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr				},	// PD31 driver 4 diag
@@ -430,7 +442,7 @@ constexpr PinDescription PinTable[] =
 	{ TcOutput::tioa9,	PwmOutput::none,	AdcInput::none,		PinCapability::rwpwm,	"io4.out"			},	// PE00 IO4_OUT
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io8.out"			},	// PE01 IO8_OUT
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr				},	// PE02 SbcTfrReady
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc1_10,	PinCapability::read,	"io8.in"			},	// PE03 IO8_IN analog in not usable because it is on the wrong ADC
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io8.in"			},	// PE03 IO8_IN analog in not usable because it is on the wrong ADC
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc0_4,	PinCapability::none,	nullptr				},	// PE04 V12 detect
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc0_3,	PinCapability::ainr,	"io3.in"			},	// PE05 IO3_IN
 };
@@ -486,19 +498,27 @@ constexpr Pin SamCsPin = PortCPin(25);				// SPI NPCS pin, input from WiFi modul
 // Note, the DMAC peripheral IDs are hard-coded in WiFiInterface
 
 // CAN
-constexpr Pin APIN_CAN0_RX = PortBPin(3);
-constexpr Pin APIN_CAN0_TX = PortBPin(2);
-constexpr GpioPinFunction CAN0PinPeriphMode = GpioPinFunction::A;
-
-constexpr Pin APIN_CAN1_RX = PortCPin(12);
-constexpr GpioPinFunction CAN1RXPinPeriphMode = GpioPinFunction::C;
-constexpr Pin APIN_CAN1_TX = PortDPin(12);
-constexpr GpioPinFunction CAN1TXPinPeriphMode = GpioPinFunction::B;
-
-constexpr unsigned int CanDeviceNumber = 1;				// CAN-FD device number
+constexpr CanParameters PrimaryCanParams =
+{
+	.instanceNumber = 1,
+	.txPin = PortDPin(12),
+	.rxPin = PortCPin(12),
+	.txPinFunction = GpioPinFunction::B,
+	.rxPinFunction = GpioPinFunction::C
+};
 
 #if defined(DUAL_CAN) && DUAL_CAN
-constexpr unsigned int SecondaryCanDeviceNumber = 0;	// plan CAN device number
+
+constexpr CanParameters SecondaryCanParams =
+{
+	.instanceNumber = 0,
+	.txPin = PortBPin(2),
+	.rxPin = PortBPin(3),
+	.txPinFunction = GpioPinFunction::A,
+	.rxPinFunction = GpioPinFunction::A
+
+};
+
 #endif
 
 // Timer allocation

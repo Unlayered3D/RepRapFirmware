@@ -72,7 +72,7 @@ constexpr ObjectModelTableEntry FiveAxisKinematics::objectModelTable[] = {
 		{ "forwardMatrix", OBJECT_MODEL_FUNC_ARRAY(22),
 				ObjectModelEntryFlags::none }, { "inverseMatrix",
 				OBJECT_MODEL_FUNC_ARRAY(23), ObjectModelEntryFlags::none }, {
-				"name", OBJECT_MODEL_FUNC(self->GetName(true)),
+				"name", OBJECT_MODEL_FUNC(self->GetName()),
 				ObjectModelEntryFlags::none }, };
 
 constexpr uint8_t FiveAxisKinematics::objectModelTableDescriptor[] = { 1, 3 };
@@ -90,7 +90,7 @@ void FiveAxisKinematics::Recalc() noexcept {
 		// the Unlayered machines; coreXBYC (K15) is the earlier hand-derived mapping and coreXBYCTilt
 		// (K17, experimental) is K16's matrix with B re-zeroed so B0 = nozzle down (see BTrigOffset).
 		// K17 used to be coreXBYC3 (K16 with per-drive homing); no machine used it, so it was replaced.
-		switch (GetKinematicsType()) {
+		switch (GetLegacyType().RawValue()) {
 		case KinematicsType::cartesian:
 		default:
 			break;
@@ -334,6 +334,23 @@ void FiveAxisKinematics::Recalc() noexcept {
 inline bool FiveAxisKinematics::HasSharedMotor(size_t axis) const noexcept {
 	return controllingDrivers[axis] != LogicalDrivesBitmap::MakeFromBits(axis);
 }
+// Upstream 3.7 creates kinematics through a self-registering list instead of a switch in Kinematics::Create.
+// M669 K15/K16/K17 (or the names) still map here because Kinematics.h keeps the reserved enum entries before them.
+Kinematics::KinematicsTypeDescriptor fiveAxisKinematicsDescriptor(FiveAxisKinematics::Create);
+
+/*static*/ Kinematics *_ecv_from _ecv_null FiveAxisKinematics::Create(const char *_ecv_array _ecv_null name, int legacyNumber) noexcept
+{
+	const KinematicsType::RawType supportedTypes[] = { KinematicsType::coreXBYC, KinematicsType::coreXBYC2, KinematicsType::coreXBYCTilt };
+	for (KinematicsType::RawType t : supportedTypes)
+	{
+		if (MatchesLegacyType(name, legacyNumber, t))
+		{
+			return new FiveAxisKinematics(t);
+		}
+	}
+	return nullptr;
+}
+
 FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 		ZLeadscrewKinematics(k, SegmentationType(true, true, false)), matrixNeedsInverting(false), a5(2.5f), d6(46.4f), bRatio(3.0f), cRatio(
 				5.5f), xSkew(0.0f), ySkew(0.0f), xzSkew(0.0f), yzSkew(0.0f), xySkew(0.0f), bSkew(0.0f), degreesPerSegment(2.0f) {
@@ -350,26 +367,7 @@ FiveAxisKinematics::FiveAxisKinematics(KinematicsType k) noexcept :
 	Recalc();
 }
 
-// Return the name of the current kinematics
-const char* _ecv_array FiveAxisKinematics::GetName(
-		bool forStatusReport) const noexcept {
-	// This reports the original kinematics that was requested. It doesn't allow for the matrix having been patched to change the kinematics.
-	switch (GetKinematicsType()) {
-	case KinematicsType::cartesian:
-		return (forStatusReport) ? "cartesian" : "Cartesian";
-
-	case KinematicsType::coreXBYC:
-		return (forStatusReport) ? "coreXBYC" : "CoreXBYC";
-
-	case KinematicsType::coreXBYC2:
-		return (forStatusReport) ? "coreXBYC2" : "CoreXBYC2";
-
-	case KinematicsType::coreXBYCTilt:
-		return (forStatusReport) ? "coreXBYCTilt" : "CoreXBYCTilt";
-	default:
-		return "unknown";
-	}
-}
+// GetName() comes from the base class in upstream 3.7: it returns the KinematicsType enum name ("coreXBYC" etc.)
 
 // Set the parameters from a M665, M666, M667 or M669 command
 // Return true if we changed any parameters. Set 'error' true if there was an error, otherwise leave it alone.

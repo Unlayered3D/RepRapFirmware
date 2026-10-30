@@ -51,21 +51,22 @@ protected:
 	GCodeResult UpdateHeaterMonitors(const StringRef& reply) noexcept override;
 	GCodeResult StartAutoTune(const StringRef& reply, bool seenA, float ambientTemp) noexcept override;
 																			// Start an auto tune cycle for this heater
-	void ApplyExtrusionFeedForward() noexcept override;
+	void ApplyExtrusionFeedForward(float newExtrusionPwmBoost, float newTempBoost, bool isNonPrintingMove) noexcept override;
 
 private:
 	enum class TuningState : uint8_t
 	{
 		notTuning = 0,
 		stabilising,
+		calibrating,
 		heatingUp,
 		idleCycles,
 		cycling
 	};
 
-	GCodeResult SendTuningCommand(const StringRef& reply, bool on) noexcept;
+	GCodeResult SendTuningCommand(const StringRef& reply, bool on, bool calibrate) noexcept;
 	void StopTuning() noexcept;
-	void UpdateFeedForward() noexcept;
+	void UpdateFeedForward(bool fanOnly, bool nonPrintingExtruderMove) noexcept;
 
 	static constexpr uint32_t RemoteStatusTimeout = 2000;
 

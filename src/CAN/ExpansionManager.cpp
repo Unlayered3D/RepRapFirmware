@@ -10,11 +10,17 @@
 #if SUPPORT_CAN_EXPANSION
 
 #include <CAN/CanInterface.h>
+#include <CAN/CanMessageGenericConstructor.h>
 #include <Platform/RepRap.h>
 #include <Platform/Platform.h>
 #include <Platform/Event.h>
 #include <GCodes/GCodeBuffer/GCodeBuffer.h>
 #include <Movement/StepTimer.h>
+#include <CanMessageGenericTables.h>
+
+#if SUPPORT_ACCELEROMETERS
+# include <Accelerometers/Accelerometers.h>
+#endif
 
 ReadWriteLock ExpansionManager::boardsLock;
 
@@ -44,9 +50,8 @@ DEFINE_GET_OBJECT_MODEL_ARRAY_TABLE(ExpansionManager)
 constexpr ObjectModelTableEntry ExpansionManager::objectModelTable[] =
 {
 	// 0. boards[] members
-	{ "accelerometer",		OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasAccelerometer, self, 4),					ObjectModelEntryFlags::none },
 	{ "canAddress",			OBJECT_MODEL_FUNC((int32_t)(&(self->FindIndexedBoard(context.GetLastIndex())) - self->boards)),					ObjectModelEntryFlags::none },
-	{ "closedLoop",			OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasClosedLoop, self, 5),					ObjectModelEntryFlags::none },
+	{ "closedLoop",			OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasClosedLoop, self, 4),					ObjectModelEntryFlags::none },
 	{ "drivers",			OBJECT_MODEL_FUNC_ARRAY_IF(self->FindIndexedBoard(context.GetLastIndex()).HasDrivers(), 0),						ObjectModelEntryFlags::liveNotPanelDue },
 	{ "firmwareDate",		OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).typeName, ExpansionDetail::firmwareDate),		ObjectModelEntryFlags::none },
 	{ "firmwareFileName",	OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).typeName,
@@ -55,12 +60,13 @@ constexpr ObjectModelTableEntry ExpansionManager::objectModelTable[] =
 													: ExpansionDetail::firmwareFileNameBin),												ObjectModelEntryFlags::none },
 	{ "firmwareVersion",	OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).typeName, ExpansionDetail::firmwareVersion),	ObjectModelEntryFlags::none },
 	{ "freeRam",			OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).neverUsedRam),						ObjectModelEntryFlags::liveNotPanelDue },
-	{ "inductiveSensor",	OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasInductiveSensor, self, 6),				ObjectModelEntryFlags::none },
+	{ "inductiveSensor",	OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasInductiveSensor, self, 5),				ObjectModelEntryFlags::none },
 	{ "maxMotors",			OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).numDrivers),							ObjectModelEntryFlags::none },
 	{ "mcuTemp",			OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasMcuTemp, self, 1),						ObjectModelEntryFlags::liveNotPanelDue },
 	{ "name",				OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).typeName, ExpansionDetail::longName),			ObjectModelEntryFlags::none },
 	{ "shortName",			OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).typeName, ExpansionDetail::shortName),			ObjectModelEntryFlags::none },
 	{ "state",				OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).state.ToString()),								ObjectModelEntryFlags::none },
+	{ "timeout",			OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).connectionTimeoutSeconds),			ObjectModelEntryFlags::none },
 	{ "uniqueId",			OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).uniqueId.IsValid(),
 													self->FindIndexedBoard(context.GetLastIndex()).uniqueId),								ObjectModelEntryFlags::none },
 	{ "v12",				OBJECT_MODEL_FUNC_IF(self->FindIndexedBoard(context.GetLastIndex()).hasV12, self, 3),							ObjectModelEntryFlags::liveNotPanelDue },
@@ -81,38 +87,33 @@ constexpr ObjectModelTableEntry ExpansionManager::objectModelTable[] =
 	{ "max",				OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).v12.maximum, 1),								ObjectModelEntryFlags::none },
 	{ "min",				OBJECT_MODEL_FUNC(self->FindIndexedBoard(context.GetLastIndex()).v12.minimum, 1),								ObjectModelEntryFlags::none },
 
-	// 4. accelerometer members
-	{ "orientation",		OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).accelerometerOrientation),			ObjectModelEntryFlags::none },
-	{ "points",				OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).accelerometerLastRunDataPoints),		ObjectModelEntryFlags::none },
-	{ "runs",				OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).accelerometerRuns),					ObjectModelEntryFlags::none },
-
-	// 5. closedLoop members
+	// 4. closedLoop members
 	{ "points",				OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).closedLoopLastRunDataPoints),			ObjectModelEntryFlags::none },
 	{ "runs",				OBJECT_MODEL_FUNC((int32_t)self->FindIndexedBoard(context.GetLastIndex()).closedLoopRuns),						ObjectModelEntryFlags::none },
 
-	// 6. inductiveSensor members (none yet)
+	// 5. inductiveSensor members (none yet)
 };
 
 constexpr uint8_t ExpansionManager::objectModelTableDescriptor[] =
 {
-	7,				// number of sections
+	6,				// number of sections
 	17,				// section 0: boards[]
 	3,				// section 1: mcuTemp
 	3,				// section 2: vIn
 	3,				// section 3: v12
-	3,				// section 4: accelerometer
-	2,				// section 5: closed loop
-	0,				// section 6: inductive sensor
+	2,				// section 4: closed loop
+	0,				// section 5: inductive sensor
 };
 
 DEFINE_GET_OBJECT_MODEL_TABLE(ExpansionManager)
 
 ExpansionBoardData::ExpansionBoardData() noexcept
 	: typeName(nullptr), neverUsedRam(0),
-	  accelerometerLastRunDataPoints(0), closedLoopLastRunDataPoints(0),
+	  closedLoopLastRunDataPoints(0),
 	  whenLastStatusReportReceived(0),
 	  driverData(nullptr),
-	  accelerometerRuns(0), closedLoopRuns(0),
+	  closedLoopRuns(0),
+	  connectionTimeoutSeconds(DefaultConnectionTimeoutSeconds),
 	  hasMcuTemp(false), hasVin(false), hasV12(false), hasAccelerometer(false),
 	  state(BoardState::unknown), numDrivers(0)
 {
@@ -170,9 +171,20 @@ void ExpansionManager::ProcessAnnouncement(CanMessageBuffer *buf, bool isNewForm
 
 			board.neverUsedRam = 0;
 			board.whenLastStatusReportReceived = millis();
-			if (board.state == BoardState::running)
+			if (isNewFormat && buf->msg.announceV1.isReconnect)
 			{
-				Event::AddEvent(EventType::expansion_reconnect, 0, src, 0, "");
+				// The board lost and regained time sync but did not restart, so its configuration is intact. P bit 1 tells the event macro whether the board switched its heaters off
+				Event::AddEvent(EventType::expansion_reconnect, (buf->msg.announceV1.wasShutDown) ? 3 : 1, src, 0, "");
+			}
+			else
+			{
+				if (board.state == BoardState::running)
+				{
+					Event::AddEvent(EventType::expansion_reconnect, 0, src, 0, "");
+				}
+#if SUPPORT_ACCELEROMETERS
+				Accelerometers::RemoteBoardRestarted(src);
+#endif
 			}
 			board.hasVin = board.hasV12 = board.hasMcuTemp = false;
 			String<StringLength100> boardTypeAndFirmwareVersion;
@@ -221,12 +233,43 @@ void ExpansionManager::ProcessAnnouncement(CanMessageBuffer *buf, bool isNewForm
 				}
 				board.driverData = new DriverData[board.numDrivers];
 			}
+			if (isNewFormat && board.driverData != nullptr)
+			{
+				for (size_t driver = 0; driver < board.numDrivers; driver++)
+				{
+					board.driverData[driver].StoreIsSmartDriver(!buf->msg.announceV1.noSmartDrivers);
+				}
+			}
 			UpdateBoardState(src, BoardState::running);
 		}
 
 		// Tell the sending board that we don't need any more announcements from it
 		buf->SetupRequestMessageNoRid<CanMessageAcknowledgeAnnounce>(CanInterface::GetCanAddress(), src);
 		CanInterface::SendMessageNoReplyNoFree(buf);
+	}
+}
+
+// Adopt a movement delay that an expansion board has asked for
+// Motion has slipped by the whole delay and it is never given back, but otherwise that shows up only as
+// a number in the M122 hiccup line, which nobody reads until a print has already failed. Report it at
+// 1s, 2s, 4s and so on, so that a slow leak leaves a growth trail without being able to spam.
+static void AdoptMovementDelay(uint32_t movementDelay, CanAddress address) noexcept
+{
+	const uint32_t totalDelay = StepTimer::ProcessMovementDelayRequest(movementDelay);
+	static uint32_t nextMovementDelayToReport = StepTimer::MaxPlausibleMovementDelay;
+	if (totalDelay > nextMovementDelayToReport)
+	{
+		while (totalDelay > nextMovementDelayToReport)					// a single large jump must not warn again on each later report
+		{
+			if (nextMovementDelayToReport > std::numeric_limits<uint32_t>::max()/2)
+			{
+				nextMovementDelayToReport = std::numeric_limits<uint32_t>::max();	// doubling again would wrap to zero and spin here for ever
+				break;
+			}
+			nextMovementDelayToReport *= 2;
+		}
+		// The total includes our own hiccups, so name the request as well, otherwise this sends the reader after a board that only asked for a few ms
+		reprap.GetPlatform().MessageF(WarningMessage, "Movement delay has reached %.1fs, board %u asked for %.1fs\n", (double)totalDelay / (double)StepTimer::GetTickRate(), address, (double)movementDelay / (double)StepTimer::GetTickRate());
 	}
 }
 
@@ -247,7 +290,7 @@ void ExpansionManager::ProcessBoardStatusReport(const CanMessageBuffer *buf) noe
 		const CanMessageBoardStatusV1& msg = buf->msg.boardStatusV1;
 		if (msg.hasMovementDelay)
 		{
-			StepTimer::ProcessMovementDelayRequest(msg.movementDelay);
+			AdoptMovementDelay(msg.movementDelay, address);
 		}
 		else
 		{
@@ -285,7 +328,7 @@ void ExpansionManager::ProcessBoardStatusReport(const CanMessageBuffer *buf) noe
 			// Currently only Z probes use analog handles, so ask the EndstopsManager to deal with it
 			if (data.handle.parts.type == RemoteInputHandle::typeZprobe)
 			{
-				reprap.GetPlatform().GetEndstops().HandleRemoteAnalogZProbeValueChange(address, data.handle.parts.major, data.handle.parts.minor, data.when, data.reading);
+				reprap.GetPlatform().GetEndstops().HandleRemoteAnalogZProbeValueChange(address, data.handle.parts.major, data.handle.parts.minor, CanInterface::Convert16bitReceivedTimeStampTo32bits(data.when), data.reading);
 			}
 		}
 	}
@@ -295,7 +338,7 @@ void ExpansionManager::ProcessBoardStatusReport(const CanMessageBuffer *buf) noe
 		const CanMessageBoardStatusV0& msg = buf->msg.boardStatusV0;
 		if (msg.hasMovementDelay)
 		{
-			StepTimer::ProcessMovementDelayRequest(msg.movementDelay);
+			AdoptMovementDelay(msg.movementDelay, address);
 		}
 		else
 		{
@@ -431,11 +474,20 @@ GCodeResult ExpansionManager::UpdateRemoteFirmware(uint32_t boardAddress, GCodeB
 	}
 
 	String<StringLength50> firmwareFilename;
-	firmwareFilename.copy((moduleNumber == 3) ? "Duet3Bootloader-" : "Duet3Firmware_");
+	#if TGBTC
+	// allow use of non duet3d firmware
+	if (IsSTM32Firmware(reply.c_str(), strlen(reply.c_str())))
+	{
+		firmwareFilename.copy((moduleNumber == 3) ? "bootloader_" : "firmware_");
+	}
+	else
+	#endif
+	{
+		firmwareFilename.copy((moduleNumber == 3) ? "Duet3Bootloader-" : "Duet3Firmware_");
+	}
 	firmwareFilename.cat(reply.c_str());
 	// If we are updating the main firmware binary, set the extension to ".uf2" if the expansion board requested it or (for backwards compatibility) if it is a Duet 3 Mini
 	firmwareFilename.cat(moduleNumber == 0 && ((extra & 0x01) != 0 || strcmp(reply.c_str(), "Mini5plus") == 0) ? ".uf2" : ".bin");
-
 	reply.Clear();
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
@@ -473,23 +525,11 @@ void ExpansionManager::UpdateFailed(CanAddress address) noexcept
 	UpdateBoardState(address, BoardState::flashFailed);
 }
 
-void ExpansionManager::AddAccelerometerRun(CanAddress address, unsigned int numDataPoints) noexcept
-{
-	boards[address].accelerometerLastRunDataPoints = numDataPoints;
-	++boards[address].accelerometerRuns;
-	reprap.BoardsUpdated();
-}
-
 void ExpansionManager::AddClosedLoopRun(CanAddress address, unsigned int numDataPoints) noexcept
 {
 	boards[address].closedLoopLastRunDataPoints = numDataPoints;
 	++boards[address].closedLoopRuns;
 	reprap.BoardsUpdated();
-}
-
-void ExpansionManager::SaveAccelerometerOrientation(CanAddress address, uint8_t orientation) noexcept
-{
-	boards[address].accelerometerOrientation = orientation;
 }
 
 GCodeResult ExpansionManager::ResetRemote(uint32_t boardAddress, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
@@ -558,8 +598,9 @@ void ExpansionManager::Spin() noexcept
 		{
 			// We can get interrupted here by the CanReceive task, which may update 'board.whenLastStatusReportReceived'.
 			// So read and save that value before we call millis().
+			// We flag the board as timed out at half its connection timeout, so that this happens before the board switches its heaters off
 			const uint32_t lastTimeReceived = board.whenLastStatusReportReceived;	// capture volatile variable before we call millis()
-			if (millis() - lastTimeReceived > StatusMessageTimeoutMillis)
+			if (millis() - lastTimeReceived > (uint32_t)board.connectionTimeoutSeconds * 500)
 			{
 				{
 					WriteLocker lock(boardsLock);
@@ -569,6 +610,48 @@ void ExpansionManager::Spin() noexcept
 			}
 		}
 	}
+}
+
+// Process M959
+GCodeResult ExpansionManager::ConfigureConnectionTimeout(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
+{
+	if (gb.Seen('B'))
+	{
+		const uint32_t address = gb.GetLimitedUIValue('B', 1, CanId::MaxCanAddress + 1);
+		if (gb.Seen('T'))
+		{
+			const uint32_t timeout = gb.GetLimitedUIValue('T', MinConnectionTimeoutSeconds, std::numeric_limits<uint16_t>::max() + 1);
+			CanMessageGenericConstructor cons(M959Params);
+			cons.PopulateFromCommand(gb);
+			const GCodeResult rslt = cons.SendAndGetResponse(CanMessageType::setConnectionTimeout, (CanAddress)address, reply);
+			if (rslt == GCodeResult::ok)						// only adopt the new timeout if the board did, otherwise the two ends would disagree
+			{
+				{
+					WriteLocker lock(boardsLock);
+					boards[address].connectionTimeoutSeconds = (uint16_t)timeout;
+				}
+				reprap.BoardsUpdated();
+			}
+			return rslt;
+		}
+		reply.printf("Board %u connection timeout %u seconds", (unsigned int)address, boards[address].connectionTimeoutSeconds);
+		return GCodeResult::ok;
+	}
+
+	ReadLocker lock(boardsLock);
+	for (CanAddress addr = 1; addr <= CanId::MaxCanAddress; addr++)
+	{
+		const ExpansionBoardData& board = boards[addr];
+		if (board.state != BoardState::unknown)
+		{
+			reply.lcatf("Board %u connection timeout %u seconds", addr, board.connectionTimeoutSeconds);
+		}
+	}
+	if (reply.IsEmpty())
+	{
+		reply.copy("No expansion boards found");
+	}
+	return GCodeResult::ok;
 }
 
 void ExpansionManager::EmergencyStop() noexcept

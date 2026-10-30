@@ -40,6 +40,7 @@ class DataTransfer
 {
 public:
 	DataTransfer() noexcept;
+	void FreeMemory() noexcept;
 	void Init() noexcept;
 	void InitFromTask() noexcept;
 	void Diagnostics(const StringRef& reply) noexcept;
@@ -69,6 +70,7 @@ public:
 	GCodeChannel ReadDeleteLocalVariable(const StringRef& varName) noexcept;				// Read a variable deletion request
 	FileHandle ReadOpenFileResult(FilePosition& fileLength) noexcept;						// Read the result of a file open request
 	int ReadFileData(char *buffer, size_t length) noexcept;									// Read file data from the SBC
+	size_t ReadFileList(char *buffer, size_t length, bool& endOfList) noexcept;				// Read a chunk of a directory listing from the SBC
 	GCodeChannel ReadSetLastCodeResult(GCodeResult& result) noexcept;						// Read the result of the last executed code
 
 	void ResendPacket(const PacketHeader *packet) noexcept;
@@ -92,6 +94,7 @@ public:
 	bool WriteCheckFileExists(const char *filename) noexcept;
 	bool WriteDeleteFileOrDirectory(const char *filename, bool recursive = false) noexcept;
 	bool WriteSecureDeleteFile(const char *filename) noexcept;
+	bool WriteGetFileList(const char *directory, uint32_t startIndex, uint32_t maxLength) noexcept;
 	bool WriteOpenFile(const char *filename, bool forWriting, bool append, uint32_t preAllocSize) noexcept;
 	bool WriteReadFile(FileHandle handle, size_t bufferSize) noexcept;
 	bool WriteFileData(FileHandle handle, const char *data, size_t& length) noexcept;
@@ -117,10 +120,14 @@ private:
 	unsigned int failedTransfers, checksumErrors;
 
 	// Transfer buffers
-#if SAME70
+#if SAME70 || (TGBTC && STM32H7)
 	// SAME70 has a write-back cache, so these must be in non-cached memory because we DMA to/from them.
 	// See http://ww1.microchip.com/downloads/en/DeviceDoc/Managing-Cache-Coherency-on-Cortex-M7-Based-MCUs-DS90003195A.pdf
 	// This in turn means that we must declare them static, so we can only have one DataTransfer instance
+
+	// On the STM32H7 and SAME70 we need to ensure that the following are in memory that is not cached (see above). 
+	// On STM32F4 we need to ensure that memory used by the SBC interface is not in the top 32Kb of RAM as this is
+	// used for the SBC IAP. 
 	static __nocache SpiTransferHeader rxHeader;
 	static __nocache SpiTransferHeader txHeader;
 	static __nocache uint32_t rxResponse;
@@ -134,8 +141,13 @@ private:
 	uint32_t rxResponse;
 	uint32_t txResponse;
 #endif
+#if (TGBTC && STM32H7)
+	alignas(4) static __nocache char rxBuffer[SbcTransferBufferSize];
+	alignas(4) static __nocache char txBuffer[SbcTransferBufferSize];
+#else
 	char *rxBuffer;				// not allocated until we know we need it
 	char *txBuffer;				// not allocated until we know we need it
+#endif
 	size_t rxPointer, txPointer;
 
 	// Transport type
@@ -145,7 +157,7 @@ private:
 	// USB transport members
 	SerialCDC *usbDevice;
 	unsigned int usbDeviceIndex;
-# if SAME70
+# if SAME70 || (TGBTC && STM32H7)
 	// The zero-copy USB path DMAs directly to/from these, so on the write-back-cache SAME70 they must be
 	// in non-cached memory for the same reason as the SPI headers above, which forces them to be static
 	static __nocache UsbTransferHeader usbRxHeader;

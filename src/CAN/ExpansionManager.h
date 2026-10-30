@@ -17,9 +17,15 @@
 #include <CanMessageBuffer.h>
 #include <General/NamedEnum.h>
 #include <Platform/UniqueId.h>
+#if TGBTC && STM32F4
+#include <Platform/Tasks.h>
+#endif
 #include <Movement/StepperDrivers/DriverData.h>
 
 NamedEnum(BoardState, uint8_t, unknown, flashing, flashFailed, resetting, running, timedOut);
+
+constexpr uint16_t DefaultConnectionTimeoutSeconds = 10;	// how long after time sync is lost before an expansion board switches its heaters off, configurable via M959
+constexpr uint16_t MinConnectionTimeoutSeconds = 3;
 
 struct ExpansionBoardData
 {
@@ -30,13 +36,12 @@ struct ExpansionBoardData
 	const char *_ecv_array _ecv_null typeName;
 	int32_t neverUsedRam;
 	MinCurMax mcuTemp, vin, v12;
-	uint32_t accelerometerLastRunDataPoints;
 	uint32_t closedLoopLastRunDataPoints;
 	volatile uint32_t whenLastStatusReportReceived;
 	UniqueId uniqueId;
 	DriverData *_ecv_array _ecv_null driverData;				// an array numDrivers long of objects, or nullptr if numDrivers is zero
-	uint16_t accelerometerRuns;
 	uint16_t closedLoopRuns;
+	uint16_t connectionTimeoutSeconds;
 	uint16_t hasMcuTemp : 1,
 			 hasVin : 1,
 			 hasV12 : 1,
@@ -47,7 +52,6 @@ struct ExpansionBoardData
 			 spare : 9;
 	BoardState state;
 	uint8_t numDrivers;
-	uint8_t accelerometerOrientation = DefaultAccelerometerOrientation;
 };
 
 class ExpansionManager INHERIT_OBJECT_MODEL
@@ -55,6 +59,12 @@ class ExpansionManager INHERIT_OBJECT_MODEL
 public:
 	ExpansionManager() noexcept;
 
+#if TGBTC && STM32F4
+	void* operator new(size_t count) { return Tasks::AllocPermanent(count); }
+	void* operator new(size_t count, std::align_val_t align) { return Tasks::AllocPermanent(count, align); }
+	void operator delete(void* ptr) noexcept {}
+	void operator delete(void* ptr, std::align_val_t align) noexcept {}
+#endif
 	unsigned int GetNumExpansionBoards() const noexcept { return numExpansionBoards; }
 	const ExpansionBoardData *_ecv_null GetBoardDetails(uint8_t address) const noexcept;
 
@@ -66,11 +76,11 @@ public:
 	GCodeResult ResetRemote(uint32_t boardAddress, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 	GCodeResult UpdateRemoteFirmware(uint32_t boardAddress, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 
+	GCodeResult ConfigureConnectionTimeout(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// process M959
+
 	void UpdateFinished(CanAddress address) noexcept;
 	void UpdateFailed(CanAddress address) noexcept;
-	void AddAccelerometerRun(CanAddress address, unsigned int numDataPoints) noexcept;
 	void AddClosedLoopRun(CanAddress address, unsigned int numDataPoints) noexcept;
-	void SaveAccelerometerOrientation(CanAddress address, uint8_t orientation) noexcept;
 	bool IsFlashing() const noexcept { return numBoardsFlashing != 0; }
 
 	void Spin() noexcept;
@@ -87,8 +97,6 @@ protected:
 	DECLARE_OBJECT_MODEL_WITH_ARRAYS
 
 private:
-	static constexpr uint32_t StatusMessageTimeoutMillis = 5000;	// if we don't receive a board status message for this long we presume that communication has been lost
-
 	const ExpansionBoardData& FindIndexedBoard(unsigned int index) const noexcept;
 	void UpdateBoardState(CanAddress address, BoardState newState) noexcept;
 

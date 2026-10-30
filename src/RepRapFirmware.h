@@ -46,6 +46,9 @@ const char *_ecv_array _ecv_null SafeStrptime(const char *_ecv_array buf, const 
 
 #if SAME70
 # define __nocache		__attribute__((section(".ram_nocache")))
+#elif STM32H7 && TGBTC
+# define __nocache		__attribute__((section(".ram_nocache")))
+# define __nocache2		__attribute__((section(".ram_nocache2")))
 #else
 # define __nocache		// nothing
 #endif
@@ -105,7 +108,8 @@ enum class PinUsedBy : uint8_t
 	temporaryInput,
 	sensor,
 	led,
-	sdCard
+	sdCard,
+	i2c
 };
 
 #include <Config/Pins.h>
@@ -382,7 +386,7 @@ class ExpansionManager;
 
 // Define a floating point type for recording numbers of microsteps including fractional microsteps.
 // This is normally defined as float, but we can use double to check whether rounding error is causing problems.
-#define USE_DOUBLE_MOTIONCALC		(0)	//(SAME70)
+#define USE_DOUBLE_MOTIONCALC		(0) //(SAME70 || STM32H7)
 
 #if USE_DOUBLE_MOTIONCALC
 typedef double motioncalc_t;
@@ -429,7 +433,7 @@ typedef Bitmap<uint32_t> InputPortsBitmap;			// Type of a bitmap representing a 
 typedef Bitmap<uint32_t> TriggerNumbersBitmap;		// Type of a bitmap representing a set of trigger numbers
 typedef Bitmap<uint64_t> ToolNumbersBitmap;			// Type of a bitmap representing a set of tool numbers
 
-#if defined(DUET3)
+#if defined(DUET3) || TGBTC
 typedef Bitmap<uint64_t> ParameterLettersBitmap;	// Type of a bitmap representing a set of parameter letters in A..Z and a..z
 constexpr char HighestAxisLetter = 'z';
 #else
@@ -638,7 +642,7 @@ constexpr float RadiansToDegrees = 180.0/3.141592653589793;
 
 // The step clock is used for timing step pulses and other fine-resolution timer purposes
 
-#if SAME70 || SAME5x
+#if SAME70 || SAME5x || TGBTC
 // All Duet 3 boards use a common step clock rate of 750kHz so that we can sync the clocks over CAN
 constexpr uint32_t StepClockRate = 48000000/64;								// 750kHz
 #else
@@ -749,6 +753,7 @@ const NvicPriority NvicPriorityAuxUart = 3;			// UART is highest to avoid charac
 const NvicPriority NvicPriorityWiFiUart = 3;		// UART used to receive debug data from the WiFi module
 #endif
 
+const NvicPriority NvicPriorityI2C = 4;				// the SharedI2CMaster ISR makes FreeRTOS calls, so this must be no higher priority than the FreeRTOS max syscall priority
 const NvicPriority NvicPriorityCan = 4;				// CAN interface
 const NvicPriority NvicPriorityPins = 4;			// priority for GPIO pin interrupts - filament sensors must be higher than step
 const NvicPriority NvicPriorityDriversSerialTMC = 4; // USART or UART used to control and monitor the smart drivers
@@ -769,13 +774,30 @@ const NvicPriority NvicPrioritySpi = 7;				// SPI is used for network transfers 
 
 #elif __NVIC_PRIO_BITS >= 4
 // We have at least 16 priority levels
+#if TGBTC
+#if STM32
+// Use priority 4 or lower for interrupts where low latency is critical and FreeRTOS calls are not needed.
+const NvicPriority NvicPriorityWatchdog = 0;		// the secondary watchdog has the highest priority
+const NvicPriority NvicPriorityTimerPWM = 1;		// Run PWM timing as high as we can to avoid jitter
+const NvicPriority NvicPriorityDriversSerialTMC = 5;// STM uses a software UART, make this a very high priority
+const NvicPriority NvicPriorityAuxUart = 6;			// UART is next
+const NvicPriority NvicPriorityWiFiUart = 6;		// UART used to receive debug data from the WiFi module
+const NvicPriority NvicPrioritySDIO = 10;
+const NvicPriority NvicPriorityCan = 7;				// CAN interface
+const NvicPriority NvicPriorityPins = 7;			// priority for GPIO pin interrupts - filament sensors must be higher than step
+const NvicPriority NvicPriorityStep = 8;			// step interrupt is next highest, it can preempt most other interrupts
+const NvicPriority NvicPriorityUSB = 9;				// USB interrupt
+const NvicPriority NvicPriorityHSMCI = 9;			// HSMCI command complete interrupt
+const NvicPriority NvicPrioritySpi = 9;				// SPI is used for network transfers on Duet WiFi/Duet vEthernet
+const NvicPriority NvicPriorityTwi = 10;			// TWI is used to read endstop and other inputs on the DueXn
+#else
+# error "Invalid configuration"
+#endif
+#else
 // Use priority 2 or lower for interrupts where low latency is critical and FreeRTOS calls are not needed.
-
 # if SAM4E
 const NvicPriority NvicPriorityWatchdog = 0;		// the secondary watchdog has the highest priority
 # endif
-
-const NvicPriority NvicPriorityAuxUart = 3;			// UART is highest to avoid character loss (it has only a 1-character receive buffer)
 const NvicPriority NvicPriorityDriversSerialTMC = 5; // USART or UART used to control and monitor the smart drivers
 const NvicPriority NvicPriorityPins = 5;			// priority for GPIO pin interrupts - filament sensors must be higher than step
 const NvicPriority NvicPriorityStep = 6;			// step interrupt is next highest, it can preempt most other interrupts
@@ -789,7 +811,7 @@ const NvicPriority NvicPriorityEthernet = 8;		// priority for Ethernet interface
 
 const NvicPriority NvicPrioritySpi = 8;				// SPI is used for network transfers on Duet WiFi/Duet vEthernet
 const NvicPriority NvicPriorityTwi = 9;				// TWI is used to read endstop and other inputs on the DueXn
-
+#endif
 #endif
 
 #endif

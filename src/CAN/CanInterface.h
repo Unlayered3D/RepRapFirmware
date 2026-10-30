@@ -31,6 +31,9 @@ namespace CanInterface
 	void Init() noexcept;
 	void Shutdown() noexcept;
 	inline CanAddress GetCurrentMasterAddress() noexcept { return CanId::MasterAddress; }		// currently fixed, but might change in future
+#if USE_SPICAN
+	bool IsCanEnabled() noexcept;
+#endif
 
 	void ReportCanTiming(const StringRef& reply) noexcept;
 
@@ -44,26 +47,37 @@ namespace CanInterface
 	void MainBoardAcknowledgedAnnounce() noexcept;
 	void LogIgnoredMovementMessage() noexcept;
 	void CheckBrs(const CanMessageTimeSync& msg) noexcept;
+	void UpdateSyncLockState(bool synced) noexcept;
+	GCodeResult ProcessM959(const CanMessageGeneric& msg, const StringRef& reply) noexcept;
 #endif
 
 	CanRequestId AllocateRequestId(CanAddress destination, CanMessageBuffer *buf) noexcept;
-	GCodeResult SendRequestAndGetStandardReply(CanMessageBuffer *buf, CanRequestId rid, const StringRef& reply, uint8_t *_ecv_null extra = nullptr) noexcept;
-	GCodeResult SendRequestAndGetCustomReply(CanMessageBuffer *buf, CanRequestId rid, const StringRef& reply, uint8_t *_ecv_null extra, CanMessageType replyType, function_ref_noexcept<void(const CanMessageBuffer*) noexcept> callback) noexcept;
+	GCodeResult SendRequestAndGetStandardReply(CanMessageBuffer *buf, CanRequestId rid, const StringRef& reply, uint8_t *_ecv_null extra = nullptr, uint32_t *_ecv_null words = nullptr) noexcept;
+	GCodeResult SendRequestAndGetCustomReply(CanMessageBuffer *buf, CanRequestId rid, const StringRef& reply, uint8_t *_ecv_null extra, uint32_t *_ecv_null words, CanMessageType replyType, function_ref_noexcept<void(const CanMessageBuffer*) noexcept> callback) noexcept;
 	void SendResponseNoFree(CanMessageBuffer *buf) noexcept;
 	void SendBroadcastNoFree(CanMessageBuffer *buf) noexcept;
 	void SendMessageNoReplyNoFree(CanMessageBuffer *buf) noexcept;
 	void Diagnostics(const StringRef& reply) noexcept;
 	CanMessageBuffer *AllocateBuffer(const GCodeBuffer *_ecv_null gb) THROWS(GCodeException);
 	void CheckCanAddress(uint32_t address, const GCodeBuffer& gb) THROWS(GCodeException);
+#if TGBTC
+	void SendFirmwareUpdateRequest(CanMessageBuffer *buf) noexcept;
+	bool GetFirmwareUpdateResponse(CanMessageBuffer *buf) noexcept;
+#endif
 
+#if USE_SPICAN
+	void GetTimeStampCounters(uint16_t& canTimeStamp, uint32_t& stepTimeStamp) noexcept;
+#else
 	uint16_t GetTimeStampCounter() noexcept;
+#endif
+	uint32_t Convert16bitReceivedTimeStampTo32bits(uint16_t ts) noexcept;
 
 #if DUAL_CAN
 	uint32_t SendPlainMessageNoFree(CanMessageBuffer *buf, uint32_t timeout = UsualSendTimeout) noexcept;
 	bool ReceivePlainMessage(CanMessageBuffer *null buf, uint32_t timeout = UsualResponseTimeout) noexcept;
 #endif
 
-#if !SAME70
+#if !EXTERNAL_CAN_TIMESTAMP_COUNTER
 	uint16_t GetTimeStampPeriod() noexcept;					// return the period of the time stamp counter in units of 48MHz CAN clocks
 #endif
 
@@ -84,8 +98,10 @@ namespace CanInterface
 	GCodeResult SetRemotePressureAdvance(const CanDriversData<ShortPressureAdvanceParameters>& data, const StringRef& reply) noexcept;
 	GCodeResult SetRemoteDriverStepsPerMmAndMicrostepping(const CanDriversData<StepsPerUnitAndMicrostepping>& data, const StringRef& reply) noexcept;
 	GCodeResult ConfigureRemoteDriver(DriverId driver, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException) pre(driver.IsRemote());
+	GCodeResult SetRemoteDriverStepMode(DriverId driver, unsigned int mode, const StringRef& reply) noexcept pre(driver.IsRemote());
+	GCodeResult SetRemotePhaseStepParam(DriverId driver, char param, float value, const StringRef& reply) noexcept pre(driver.IsRemote());
 	GCodeResult GetSetRemoteDriverStallParameters(const CanDriversList& drivers, GCodeBuffer& gb, const StringRef& reply, OutputBuffer *_ecv_null & buf) THROWS(GCodeException);
-	void EnableRemoteStallEndstop(DriverId did, float speed) THROWS(GCodeException) pre(did.IsRemote());
+	void EnableRemoteStallEndstop(DriverId did, float speed, bool useEncoder) THROWS(GCodeException) pre(did.IsRemote());
 	void DisableRemoteStallEndstops(CanAddress boardId) noexcept;
 
 #if 0	// not currently used
@@ -102,6 +118,7 @@ namespace CanInterface
 	GCodeResult ChangeHandleResponseTime(CanAddress boardAddress, RemoteInputHandle h, uint32_t responseMillis, bool *_ecv_null currentState, const StringRef &reply) noexcept;
 	GCodeResult ChangeHandleThreshold(CanAddress boardAddress, RemoteInputHandle h, int32_t threshold, bool *_ecv_null currentState, const StringRef &reply) noexcept;
 	GCodeResult ChangeHandleSetTouchMode(CanAddress boardAddress, RemoteInputHandle h, uint32_t sensitivity, const StringRef &reply) noexcept;
+	GCodeResult TareHandle(CanAddress boardAddress, RemoteInputHandle h, uint32_t mode, int32_t& baseline, const StringRef &reply) noexcept;
 	GCodeResult SetHandleDriveLevel(CanAddress boardAddress, RemoteInputHandle h, uint32_t driveLevel, uint8_t &returnedDriveLevel, const StringRef &reply) noexcept;
 	typedef void (*ReadHandlesCallbackFunction)(CallbackParameter param, RemoteInputHandle h, int32_t val) noexcept;
 	GCodeResult ReadRemoteHandles(CanAddress boardAddress, RemoteInputHandle mask, RemoteInputHandle pattern, ReadHandlesCallbackFunction callback, CallbackParameter param, const StringRef &reply) noexcept;
@@ -116,11 +133,12 @@ namespace CanInterface
 	GCodeResult ChangeAddressAndNormalTiming(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 	GCodeResult EnableCan(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 #if SUPPORT_ACCELEROMETERS
-	GCodeResult StartAccelerometer(DriverId device, uint8_t axes, uint16_t numSamples, uint8_t mode, const GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
+	GCodeResult StartAccelerometer(CanAddress boardAddress, size_t deviceNumber, uint8_t axes, uint32_t numSamples, uint8_t mode, const GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 #endif
 	GCodeResult StartClosedLoopDataCollection(DriverId device, uint16_t filter, uint16_t numSamples, uint16_t p_rateRequested, uint8_t p_movementRequested, uint8_t mode, const GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 	GCodeResult ProcessM655(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 
+	void UpdateStatusLed() noexcept;
 #if SUPPORT_MULTICAST_DISCOVERY
 	void SetStatusLedIdentify(uint32_t seconds) noexcept;
 	void SetStatusLedNormal() noexcept;

@@ -44,7 +44,7 @@ constexpr ObjectModelTableEntry Heater::objectModelTable[] =
 	{ "active",				OBJECT_MODEL_FUNC(self->GetActiveTemperature(), 1), 									ObjectModelEntryFlags::live },
 	{ "avgPwm",				OBJECT_MODEL_FUNC(self->GetAveragePWM(), 3), 											ObjectModelEntryFlags::liveNotPanelDue },
 	{ "current",			OBJECT_MODEL_FUNC(self->GetTemperature(), 2), 											ObjectModelEntryFlags::live },
-	{ "extrPwmBoost",		OBJECT_MODEL_FUNC_IF(self->usingFeedForward, self->extrusionPwmBoost, 2), 				ObjectModelEntryFlags::liveNotPanelDue },
+	{ "extrPwmBoost",		OBJECT_MODEL_FUNC_IF(self->usingFeedForward, self->lastExtrusionPwmBoost, 2), 			ObjectModelEntryFlags::liveNotPanelDue },
 	{ "extrTempBoost",		OBJECT_MODEL_FUNC_IF(self->usingFeedForward, self->extrusionTemperatureBoost, 2), 		ObjectModelEntryFlags::liveNotPanelDue },
 	{ "max",				OBJECT_MODEL_FUNC(self->GetHighestTemperatureLimit(), 1), 								ObjectModelEntryFlags::none },
 	{ "maxBadReadings",		OBJECT_MODEL_FUNC((int32_t)self->maxBadTemperatureCount), 								ObjectModelEntryFlags::none },
@@ -95,8 +95,9 @@ float Heater::afterPeakTemp;							// temperature after max from which we start 
 uint32_t Heater::afterPeakTime;							// the time at which we recorded afterPeakTemp
 float Heater::lastCoolingRate;
 FansBitmap Heater::tuningFans;
-unsigned int Heater::tuningPhase;
+Heater::TuningPhase Heater::tuningPhase(TuningPhase::checking_temperature_is_stable);
 uint8_t Heater::idleCyclesDone;
+uint8_t Heater::cyclesToSkip;
 bool Heater::tuningQuietMode;
 
 Heater::HeaterParameters Heater::fanOffParams, Heater::fanOnParams;
@@ -128,17 +129,17 @@ Heater::~Heater() noexcept
 
 void Heater::ResetHeater() noexcept
 {
-	extrusionPwmBoost = 0.0;
+	lastExtrusionPwmBoost = 0.0;
+	allowedExtrusionPwmBoost = 0.0;
 	extrusionTemperatureBoost = 0.0;
-	previousExtrusionPwmBoost = 0.0;
 	lastFanPwm = 0.0;
 }
 
 void Heater::SwitchOff() noexcept
 {
-	extrusionPwmBoost = 0.0;
+	lastExtrusionPwmBoost = 0.0;
+	allowedExtrusionPwmBoost = 0.0;
 	extrusionTemperatureBoost = 0.0;
-	previousExtrusionPwmBoost = 0.0;
 }
 
 void Heater::SetSensorNumber(int sn) noexcept
@@ -149,12 +150,10 @@ void Heater::SetSensorNumber(int sn) noexcept
 	}
 }
 
-void Heater::SetExtrusionFeedForward(float pwmBoost, float tempBoost) noexcept
+void Heater::SetExtrusionFeedForward(float pwmBoost, float tempBoost, bool isNonPrintingMove) noexcept
 {
 	usingFeedForward = true;
-	extrusionPwmBoost = pwmBoost;
-	extrusionTemperatureBoost = tempBoost;
-	ApplyExtrusionFeedForward();
+	ApplyExtrusionFeedForward(pwmBoost, tempBoost, isNonPrintingMove);
 }
 
 GCodeResult Heater::SetOrReportModel(unsigned int heater, GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
@@ -327,9 +326,10 @@ GCodeResult Heater::StartAutoTune(GCodeBuffer& gb, const StringRef& reply, FansB
 	return rslt;
 }
 
-const char *_ecv_array const Heater::TuningPhaseText[] =
+constexpr const char *_ecv_array TuningPhaseText[] =
 {
 	"checking temperature is stable",
+	"calibrating heater",
 	"heating up",
 	"settling",
 	"measuring",
@@ -339,14 +339,14 @@ const char *_ecv_array const Heater::TuningPhaseText[] =
 	"measuring with fan on"
 };
 
+static_assert(ARRAY_SIZE(TuningPhaseText) == (size_t)Heater::TuningPhase::numPhases);
+
 // Get the auto tune status or last result
 void Heater::GetAutoTuneStatus(const StringRef& reply) const noexcept
 {
 	if (GetStatus() == HeaterStatus::tuning)
 	{
-		// Phases are: 1 = stabilising, 2 = heating, 3 = settling, 4 = cycling with fan off, 5 = cycling with fan on
-		const unsigned int numPhases = (tuningFans.IsEmpty()) ? 4 : ARRAY_SIZE(TuningPhaseText);
-		reply.printf("Heater %u is being tuned, phase %u of %u, %s", GetHeaterNumber(), tuningPhase + 1, numPhases, TuningPhaseText[tuningPhase]);
+		reply.printf("Heater %u is being tuned, phase %u of %u, %s", GetHeaterNumber(), (unsigned int)tuningPhase + 1, (unsigned int)TuningPhase::numPhases, TuningPhaseText[(unsigned int)tuningPhase]);
 	}
 	else if (tuned)
 	{
@@ -359,11 +359,11 @@ void Heater::GetAutoTuneStatus(const StringRef& reply) const noexcept
 }
 
 // Tell the user what's happening, called after the tuning phase has been updated
-void Heater::ReportTuningUpdate() noexcept
+void Heater::ReportTuningUpdate(bool skipping) noexcept
 {
-	if (tuningPhase < ARRAY_SIZE(TuningPhaseText))
+	if (tuningPhase < TuningPhase::numPhases)
 	{
-		reprap.GetPlatform().MessageF(GenericMessage, "Auto tune starting phase %u, %s\n", tuningPhase, TuningPhaseText[tuningPhase]);
+		reprap.GetPlatform().MessageF(GenericMessage, "Auto tune %s phase %u: %s\n", (skipping) ? "skipping" : "starting", (unsigned int)tuningPhase, TuningPhaseText[(unsigned int)tuningPhase]);
 	}
 }
 
@@ -605,7 +605,7 @@ HeaterStatus Heater::GetStatus() const noexcept
 	return (mode == HeaterMode::fault) ? HeaterStatus::fault
 			: (mode == HeaterMode::offline) ? HeaterStatus::offline
 				: (mode == HeaterMode::off) ? HeaterStatus::off
-					: (mode >= HeaterMode::tuning0) ? HeaterStatus::tuning
+					: (mode >= HeaterMode::tuning0_settling) ? HeaterStatus::tuning
 						: (active) ? HeaterStatus::active
 							: HeaterStatus::standby;
 }

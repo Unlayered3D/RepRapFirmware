@@ -13,16 +13,17 @@
 #include <RTOSIface/RTOSIface.h>
 #include <ObjectModel/ObjectModel.h>
 #include <General/NamedEnum.h>
-
-#if defined(DUET3_MB6HC) && HAS_WIFI_NETWORKING
+#if !HAS_NETWORKING
+const size_t MaxNetworkInterfaces = 0;
+#elif defined(DUET3_MB6HC) && HAS_WIFI_NETWORKING
 const size_t MaxNetworkInterfaces = 2;
-#elif defined(DUET3_MB6HC) || defined(DUET3_MB6XD) || defined(DUET_NG) || defined(DUET_M) || defined(PCCB) || defined(DUET3MINI)
+#elif defined(DUET3_MB6HC) || defined(DUET3_MB6XD) || defined(DUET_NG) || defined(DUET_M) || TGBTC || defined(PCCB) || defined(DUET3MINI)
 const size_t MaxNetworkInterfaces = 1;
 #else
 # error Wrong Network.h file included
 #endif
 
-#if SAME70
+# if SAME70 || (TGBTC && STM32H7)
 const size_t NumHttpResponders = 6;		// the number of concurrent HTTP requests we can process
 const size_t NumTelnetResponders = 2;	// the number of concurrent Telnet sessions we support
 #else

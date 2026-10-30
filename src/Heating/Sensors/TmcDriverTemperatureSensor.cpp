@@ -10,6 +10,9 @@
 #include <Platform/RepRap.h>
 
 #if HAS_SMART_DRIVERS
+#if TGBTC
+#include <TMC22xx.h>
+#endif
 
 // Sensor type descriptors
 TemperatureSensor::SensorTypeDescriptor TmcDriverTemperatureSensor::primaryTmcDriverSensorDescriptor(PrimaryTypeName, [](unsigned int sensorNum) noexcept -> TemperatureSensor *_ecv_from { return new TmcDriverTemperatureSensor(sensorNum, 0); } );
@@ -17,7 +20,9 @@ TemperatureSensor::SensorTypeDescriptor TmcDriverTemperatureSensor::primaryTmcDr
 #if defined(DUET_NG) || defined(PCCB_10)
 TemperatureSensor:: SensorTypeDescriptor TmcDriverTemperatureSensor::duexTmcDriverSensorDescriptor(DuexTypeName, [](unsigned int sensorNum) noexcept -> TemperatureSensor *_ecv_from { return new TmcDriverTemperatureSensor(sensorNum, 1); } );
 #endif
-
+#if TGBTC
+TemperatureSensor::SensorTypeDescriptor TmcDriverActualTemperatureSensor::typeDescriptor(TypeName, [](unsigned int sensorNum) noexcept -> TemperatureSensor *_ecv_from { return new TmcDriverActualTemperatureSensor(sensorNum); } );
+#endif
 TmcDriverTemperatureSensor::TmcDriverTemperatureSensor(unsigned int sensorNum, unsigned int chan) noexcept
 	: TemperatureSensor(sensorNum, "Stepper driver temperature warnings"), channel(chan)
 {
@@ -34,9 +39,34 @@ const char *_ecv_array TmcDriverTemperatureSensor::GetShortSensorType() const no
 
 void TmcDriverTemperatureSensor::Poll() noexcept
 {
+#if TGBTC
+	float maxTemp = 0.0f;
+	for(size_t drive = 0; drive < totalSmartDrivers; drive++)
+		maxTemp = max<float>(maxTemp, SmartDrivers::GetDriverTemperature(drive));
+	SetResult(maxTemp, TemperatureError::ok);
+#else	
 	SetResult(reprap.GetMove().GetTmcDriversTemperature(channel), TemperatureError::ok);
+#endif
 }
 
+
+#if TGBTC
+// Class TmcDriverActualTemperatureSensor members
+TmcDriverActualTemperatureSensor::TmcDriverActualTemperatureSensor(unsigned int sensorNum) noexcept
+	: AdditionalOutputSensor(sensorNum, "Stepper driver temperature", false)
+{
+}
+
+TmcDriverActualTemperatureSensor::~TmcDriverActualTemperatureSensor() noexcept
+{
+}
+
+void TmcDriverActualTemperatureSensor::Poll() noexcept
+{
+	SetResult(SmartDrivers::GetDriverTemperature(outputNumber), TemperatureError::ok);
+}
+
+#endif
 #endif
 
 // End

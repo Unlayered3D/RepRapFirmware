@@ -13,6 +13,7 @@
 #include <Platform/RepRap.h>
 #include <Platform/TaskPriorities.h>
 #include "WiFiInterface.h"
+#include "NetworkResponder.h"
 
 const unsigned int MaxBuffersPerSocket = 4;
 
@@ -25,6 +26,7 @@ void WiFiSocket::Init(SocketNumber n) noexcept
 	socketNum = n;
 	state = SocketState::inactive;
 	txBufferSpace = 0;
+	responder = nullptr;
 }
 
 // Return true if this socket's local port is the TLS variant of its protocol
@@ -295,14 +297,20 @@ WiFiInterface *WiFiSocket::GetInterface() const noexcept
 }
 
 // Try to receive more incoming data from the socket.
-void WiFiSocket::ReceiveData(uint16_t bytesAvailable) noexcept
+void WiFiSocket::ReceiveData(int32_t bytesAvailable) noexcept
 {
-	if (bytesAvailable != 0)
+	// Note because more data may have arrived since we were told how much data was available it is possible here for
+	// ret > bytesAvailable for this reason we have changed the type of bytesAvailable from that used in the Duet
+	// source which does not loop using bytesAvalable. I'm not sure if it was deliberate in the Duet code to allow
+	// bytesAvailable to go in effect negative and thus allow the hasMoreDataPending flag to be set in the more
+	// data case.
+
+	while (bytesAvailable > 0)
 	{
 //		debugPrintf("%u available\n", bytesAvailable);
 		// First see if we already have a buffer with enough room
 		NetworkBuffer *_ecv_null const lastBuffer = NetworkBuffer::FindLast(receivedData);
-		if (lastBuffer != nullptr && (bytesAvailable <= lastBuffer->SpaceLeft() || (lastBuffer->SpaceLeft() != 0 && NetworkBuffer::Count(receivedData) >= MaxBuffersPerSocket)))
+		if (lastBuffer != nullptr && ((size_t)bytesAvailable <= lastBuffer->SpaceLeft() || (lastBuffer->SpaceLeft() != 0 && NetworkBuffer::Count(receivedData) >= MaxBuffersPerSocket)))
 		{
 			// Read data into the existing buffer
 			const size_t maxToRead = min<size_t>(lastBuffer->SpaceLeft(), MaxDataLength);
@@ -316,7 +324,10 @@ void WiFiSocket::ReceiveData(uint16_t bytesAvailable) noexcept
 				{
 					debugPrintf("Received %u bytes\n", (unsigned int)ret);
 				}
+				if (responder) responder->Spin();
 			}
+			else
+				break;
 		}
 		else if (NetworkBuffer::Count(receivedData) < MaxBuffersPerSocket)
 		{
@@ -335,18 +346,23 @@ void WiFiSocket::ReceiveData(uint16_t bytesAvailable) noexcept
 					{
 						debugPrintf("Received %u bytes\n", (unsigned int)ret);
 					}
+					if (responder) responder->Spin();
 				}
 				else
 				{
 					buf->Release();
+					break;
 				}
 			}
-//			else debugPrintf("no buffer\n");
+			else
+				break;
 		}
+		else
+			break;
 	}
-	hasMoreDataPending = (bytesAvailable != 0);
+	hasMoreDataPending = (bytesAvailable > 0);
 }
-
+	
 // Discard any received data for this transaction
 void WiFiSocket::DiscardReceivedData() noexcept
 {
@@ -356,6 +372,7 @@ void WiFiSocket::DiscardReceivedData() noexcept
 	}
 	hasMoreDataPending = false;
 }
+
 
 // Send the data, returning the length buffered
 size_t WiFiSocket::Send(const uint8_t *_ecv_array data, size_t length) noexcept

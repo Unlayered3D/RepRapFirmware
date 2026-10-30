@@ -27,11 +27,13 @@
 
 #if SUPPORT_CAN_EXPANSION
 # include <CAN/CanInterface.h>
+# include <CAN/CanMessageGenericConstructor.h>
+# include <CanMessageGenericTables.h>
 # include <CAN/ExpansionManager.h>
 # include <ClosedLoop/ClosedLoop.h>
 #endif
 
-#ifdef I2C_IFACE
+#if defined(I2C_IFACE) && (SAM4S || SAM4E)
 # include <Wire.h>
 #endif
 
@@ -467,7 +469,6 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, const StringRef& reply) THRO
 #if SUPPORT_CAN_EXPANSION
 				if (driver.IsRemote())
 				{
-					// Currently we don't have a way of determining how many drivers each board has, but we have a limit of 3 per board
 					const ExpansionBoardData * const data = reprap.GetExpansion().GetBoardDetails(driver.boardAddress);
 					if (data != nullptr && driver.localDriver >= data->numDrivers)
 					{
@@ -527,20 +528,24 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, const StringRef& reply) THRO
 
 					// Set the initial coordinates of the new drive
 					float initialCoords[MaxAxes];
-					reprap.GetMove().GetKinematics().GetAssumedInitialPosition(numTotalAxes, initialCoords);
+					move.GetKinematics().GetAssumedInitialPosition(numTotalAxes, initialCoords);
 					for (MovementState& ms : moveStates)
 					{
-						ms.raw.coords[drive] = initialCoords[drive];		// user has defined a new axis, so set its position
+						ms.raw.coords[drive] = initialCoords[drive];	// user has defined a new axis, so set its position
 						ToolOffsetInverseTransform(ms);
 					}
 					reprap.MoveUpdated();
 				}
+#if SUPPORT_PHASE_STEPPING || SUPPORT_CAN_EXPANSION
+				if (move.GetStepMode(drive) == StepMode::phase)
+				{
+					// Revert to step/dir while the old drivers are still mapped, else the new drivers get the reset and the old ones stay in phase stepping
+					(void)move.SetStepMode(drive, StepMode::stepDir, reply);
+				}
+#endif
 				move.SetAxisDriversConfig(drive, numValues, drivers);
 #if SUPPORT_CAN_EXPANSION
 				axesToUpdate.SetBit(drive);
-#endif
-#if SUPPORT_PHASE_STEPPING
-				move.SetStepMode(drive, StepMode::stepDir, reply);
 #endif
 			}
 		}
@@ -556,15 +561,19 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, const StringRef& reply) THRO
 		numExtruders = numValues;
 		for (size_t i = 0; i < numValues; ++i)
 		{
-			move.SetExtruderDriver(i, drivers[i]);
 #if SUPPORT_CAN_EXPANSION || SUPPORT_PHASE_STEPPING
 			const size_t drive = ExtruderToLogicalDrive(i);
 #endif
+#if SUPPORT_PHASE_STEPPING || SUPPORT_CAN_EXPANSION
+			if (move.GetStepMode(drive) == StepMode::phase)
+			{
+				// Revert to step/dir while the old driver is still mapped, else the new driver gets the reset and the old one stays in phase stepping
+				(void)move.SetStepMode(drive, StepMode::stepDir, reply);
+			}
+#endif
+			move.SetExtruderDriver(i, drivers[i]);
 #if SUPPORT_CAN_EXPANSION
 			axesToUpdate.SetBit(drive);
-#endif
-#if SUPPORT_PHASE_STEPPING
-			move.SetStepMode(drive, StepMode::stepDir, reply);
 #endif
 		}
 		if (FilamentMonitor::CheckDriveAssignments(reply) && rslt == GCodeResult::ok)
@@ -590,7 +599,7 @@ GCodeResult GCodes::DoDriveMapping(GCodeBuffer& gb, const StringRef& reply) THRO
 
 	if (seen || seenExtrude)
 	{
-#if SUPPORT_S_CURVE
+#if SUPPORT_3RD_ORDER
 		move.UpdateSCurveFlagAndJerk();
 #endif
 		reprap.MoveUpdated();
@@ -840,17 +849,51 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, const StringRef &reply) THRO
 
 #endif
 
-#if SUPPORT_PHASE_STEPPING
+#if SUPPORT_PHASE_STEPPING || SUPPORT_CAN_EXPANSION
 
 // Deal with M970
 GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
 {
 	constexpr int8_t kvSubCommand = 1;
 	constexpr int8_t kaSubCommand = 2;
+	constexpr int8_t correctionSubCommand = 3;
 
 	bool seen = false;
 	Move& move = reprap.GetMove();
 	int8_t commandFraction = gb.GetCommandFraction();
+	if (commandFraction == correctionSubCommand)
+	{
+		// The phase correction is a property of the driver, not the axis
+		gb.MustSee('P');
+		const DriverId id = gb.GetDriverId();
+		if (gb.Seen('S') && !LockAllMovementSystemsAndWaitForStandstill(gb))
+		{
+			return GCodeResult::notFinished;
+		}
+		if (id.IsRemote())
+		{
+#if SUPPORT_CAN_EXPANSION
+			CanMessageGenericConstructor cons(M970Point3Params);
+			cons.PopulateFromCommand(gb);
+			return cons.SendAndGetResponse(CanMessageType::m970p3, id.boardAddress, reply);
+#else
+			reply.copy("Phase correction is not supported on remote drivers");
+			return GCodeResult::error;
+#endif
+		}
+#if SUPPORT_PHASE_STEPPING
+		if (id.localDriver >= move.GetNumActualDirectDrivers())
+		{
+			reply.printf("Driver number %u out of range", id.localDriver);
+			return GCodeResult::error;
+		}
+		return PhaseStep::ConfigureCorrection(id.localDriver, gb, reply);
+#else
+		reply.copy("Local drivers on this board do not support phase stepping");
+		return GCodeResult::error;
+#endif
+	}
+
 	for (size_t axis = 0; axis < numTotalAxes; axis++)
 	{
 		if (gb.Seen(axisLetters[axis]))
@@ -869,7 +912,10 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 					const bool ret = move.SetStepMode(axis, mode, reply);
 					if (!ret)
 					{
-						reply.printf("Could not set step mode for axis %c to mode %u", axisLetters[axis], (uint16_t)mode);
+						if (reply.IsEmpty())
+						{
+							reply.printf("Could not set step mode for axis %c to mode %u", axisLetters[axis], (uint16_t)mode);
+						}
 						return GCodeResult::error;
 					}
 					break;
@@ -878,7 +924,11 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 			case kaSubCommand:
 				{
 					const float value = gb.GetLimitedFValue(axisLetters[axis], 0, FLT_MAX);
-					move.ConfigurePhaseStepping(axis, value, commandFraction == kvSubCommand ? PhaseStepConfig::kv : PhaseStepConfig::ka);
+					const GCodeResult rslt = move.ConfigurePhaseStepping(axis, value, commandFraction == kvSubCommand ? PhaseStepConfig::kv : PhaseStepConfig::ka, reply);
+					if (rslt != GCodeResult::ok)
+					{
+						return rslt;
+					}
 					break;
 				}
 			}
@@ -911,7 +961,10 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 					const bool ret = move.SetStepMode(ExtruderToLogicalDrive(e), (StepMode)eVals[e], reply);
 					if (!ret)
 					{
-						reply.printf("Could not set step mode for extruder %u to mode %lu", e, eVals[e]);
+						if (reply.IsEmpty())
+						{
+							reply.printf("Could not set step mode for extruder %u to mode %lu", e, eVals[e]);
+						}
 						return GCodeResult::error;
 					}
 				}
@@ -931,7 +984,11 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 						reply.printf("Invalid K%c %f", commandFraction == kvSubCommand ? 'v' : 'a', (double)eVals[e]);
 						return GCodeResult::error;
 					}
-					move.ConfigurePhaseStepping(ExtruderToLogicalDrive(e), eVals[e], commandFraction == kvSubCommand ? PhaseStepConfig::kv : PhaseStepConfig::ka);
+					const GCodeResult rslt = move.ConfigurePhaseStepping(ExtruderToLogicalDrive(e), eVals[e], commandFraction == kvSubCommand ? PhaseStepConfig::kv : PhaseStepConfig::ka, reply);
+					if (rslt != GCodeResult::ok)
+					{
+						return rslt;
+					}
 				}
 				break;
 			}
@@ -940,7 +997,7 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 
 	if (seen)
 	{
-#if SUPPORT_S_CURVE
+#if SUPPORT_3RD_ORDER
 		move.UpdateSCurveFlagAndJerk();
 #endif
 		reprap.MoveUpdated();
@@ -994,6 +1051,10 @@ GCodeResult GCodes::ConfigureStepMode(GCodeBuffer& gb, const StringRef& reply) T
 // Deal with M569
 GCodeResult GCodes::ConfigureDriver(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
 {
+	if (gb.GetCommandFraction() == 2 && gb.Seen('S') && !LockAllMovementSystemsAndWaitForStandstill(gb))
+	{
+		return GCodeResult::notFinished;
+	}
 	gb.MustSee('P');
 	size_t drivesCount = numVisibleAxes;
 	DriverId driverIds[drivesCount];
@@ -1073,39 +1134,44 @@ GCodeResult GCodes::HandleG68(GCodeBuffer& gb, const StringRef& reply) THROWS(GC
 			return GCodeResult::error;
 		}
 
-		float angle, centreX, centreY;
-		gb.MustSee('R');
-		angle = gb.GetFValue();
-		gb.MustSee('A', 'X');
-		centreX = gb.GetFValue();
-		gb.MustSee('B', 'Y');
-		centreY = gb.GetFValue();
-
 		MovementState& ms = GetMovementState(gb);
-		ms.g68Centre[0] = centreX + GetWorkplaceOffset(gb, 0);
-		ms.g68Centre[1] = centreY + GetWorkplaceOffset(gb, 1);
-#if SUPPORT_ASYNC_MOVES
-		const float oldG68Angle = ms.g68Angle;
-#endif
-		if (gb.Seen('I'))
+		if (gb.Seen('R'))
 		{
-			ms.g68Angle += angle;
+			const float angle = gb.GetFValue();
+			gb.MustSee('A', 'X');
+			const float centreX = gb.GetFValue();
+			gb.MustSee('B', 'Y');
+			const float centreY = gb.GetFValue();
+
+			ms.g68Centre[0] = centreX + GetWorkplaceOffset(gb, 0);
+			ms.g68Centre[1] = centreY + GetWorkplaceOffset(gb, 1);
+#if SUPPORT_ASYNC_MOVES
+			const float oldG68Angle = ms.g68Angle;
+#endif
+			if (gb.Seen('I'))
+			{
+				ms.g68Angle += angle;
+			}
+			else
+			{
+				ms.g68Angle = angle;
+			}
+#if SUPPORT_ASYNC_MOVES
+			if (ms.g68Angle != 0.0 && oldG68Angle == 0.0)
+			{
+				// We have just started doing coordinate rotation, so if we own axis letter X we need to own Y and vice versa
+				// Simplest is just to say we don't own either in the axis letters bitmap
+				ms.ReleaseAxisLetter('X');
+				ms.ReleaseAxisLetter('Y');
+			}
+#endif
+			UpdateCurrentUserPosition(gb);
+			reprap.MoveUpdated();
 		}
 		else
 		{
-			ms.g68Angle = angle;
+			reply.printf("XY rotation %.2f degrees centred on [%.3f %.3f]", (double)ms.g68Angle, (double)ms.g68Centre[0], (double)ms.g68Centre[1]);
 		}
-#if SUPPORT_ASYNC_MOVES
-		if (ms.g68Angle != 0.0 && oldG68Angle == 0.0)
-		{
-			// We have just started doing coordinate rotation, so if we own axis letter X we need to own Y and vice versa
-			// Simplest is just to say we don't own either in the axis letters bitmap
-			ms.ReleaseAxisLetter('X');
-			ms.ReleaseAxisLetter('Y');
-		}
-#endif
-		UpdateCurrentUserPosition(gb);
-		reprap.MoveUpdated();
 	}
 	return GCodeResult::ok;
 }
@@ -1123,13 +1189,16 @@ void GCodes::RotateCoordinates(const MovementState& ms, float angleDegrees, floa
 #endif
 
 // Change a live extrusion factor
-void GCodes::ChangeExtrusionFactor(unsigned int extruder, float factor) noexcept
+void GCodes::ChangeExtrusionFactor(unsigned int extruder, float factor, bool immediate) noexcept
 {
 	const float multiplier = factor/extrusionFactors[extruder];
 	extrusionFactors[extruder] = factor;
-	for (MovementState& ms : moveStates)
+	if (immediate)
 	{
-		ms.ChangeExtrusionFactor(extruder, multiplier);
+		for (MovementState& ms : moveStates)
+		{
+			ms.ChangeExtrusionFactor(extruder, multiplier);
+		}
 	}
 	reprap.MoveUpdated();
 }

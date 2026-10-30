@@ -84,6 +84,9 @@
 #define LWIP_NETCONN            	0
 #define LWIP_SOCKET             	0
 
+/* Listeners set SOF_REUSEADDR so that re-binding a port succeeds while TIME_WAIT pcbs of earlier connections still hold it */
+#define SO_REUSE					1
+
 /*
    -----------------------------------------------
    ---------- Application layer (altcp) -----------
@@ -293,6 +296,7 @@ extern void *lwipRamHeap;
 /* --------- IGMP options ---------- */
 #define LWIP_IGMP                   1
 #define LWIP_MDNS_RESPONDER         1
+#define LWIP_MDNS_SEARCH            0		// defaults to 1; we never search, and the client response parser has the overflow of CVE-2026-112062
 #define LWIP_NUM_NETIF_CLIENT_DATA  (LWIP_MDNS_RESPONDER)
 
 extern uint32_t random32(void) noexcept;
@@ -441,7 +445,7 @@ extern uint32_t random32(void) noexcept;
 
 #define LWIP_NOASSERT					0
 
-#define LWIP_DEBUG
+//#define LWIP_DEBUG
 #define LWIP_DBG_MIN_LEVEL              LWIP_DBG_LEVEL_ALL
 #define LWIP_DBG_TYPES_ON               LWIP_DBG_ON
 

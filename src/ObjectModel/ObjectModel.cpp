@@ -446,6 +446,14 @@ void ExpressionValue::ExtractRequestedPart(const StringRef& rslt, bool quoteStri
 		case ExpansionDetail::firmwareFileNameBin:
 		case ExpansionDetail::firmwareFileNameUf2:
 			if (quoteStrings) { rslt.cat('"'); }
+#if TGBTC
+			// allow use of non Duet firmware
+			if (IsSTM32Firmware(sVal, indexOfDivider1))
+			{
+				rslt.cat("firmware_");
+			}
+			else
+#endif
 			rslt.cat("Duet3Firmware_");
 			rslt.catn(sVal, indexOfDivider1);
 			rslt.cat(((ExpansionDetail)param == ExpansionDetail::firmwareFileNameUf2 || strncmp(sVal, "Mini5plus", indexOfDivider1) == 0) ? ".uf2" : ".bin");
@@ -1269,6 +1277,16 @@ int ObjectModelTableEntry::IdCompare(const char *_ecv_array id) const noexcept
 			: -1;
 }
 
+// The ID string carries the '^' index markers that the expression parser appended, so report only the part before them.
+// This is a separate noinline function so that the buffer doesn't add to the stack usage of the recursive caller
+[[noreturn]] static void __attribute__((noinline)) ThrowUnknownValueException(const ObjectExplorationContext& context, const char *_ecv_array idString) THROWS(GCodeException)
+{
+	const char *_ecv_array _ecv_null const indexMarker = strchr(idString, '^');
+	String<StringLength50> shortId;
+	shortId.copy(idString, (indexMarker != nullptr) ? (size_t)(indexMarker - idString) : strlen(idString));
+	throw context.ConstructParseException("unknown value '%s'", shortId.c_str());
+}
+
 // Get the value of an object
 ExpressionValue ObjectModel::GetObjectValueUsingTableNumber(ObjectExplorationContext& context, const ObjectModelClassDescriptor * null classDescriptor, const char *_ecv_array idString, uint8_t tableNumber) const THROWS(GCodeException)
 decrease(strlen(idString))	// recursion variant
@@ -1306,16 +1324,16 @@ decrease(strlen(idString))	// recursion variant
 		return ExpressionValue(false);
 	}
 
-	throw context.ConstructParseException("unknown value '%s'", idString);
+	ThrowUnknownValueException(context, idString);
 }
 
 ExpressionValue ObjectModel::GetObjectValue(ObjectExplorationContext& context, const ObjectModelClassDescriptor *classDescriptor, const ExpressionValue& val, const char *_ecv_array idString) const THROWS(GCodeException)
 decrease(strlen(idString))	// recursion variant
 {
 	// If we are at the end of the selector string and within exists(...) but not exists(#...) then just return false if the value is null, true otherwise
-	if (*idString == 0 && context.WantExists() && !context.WantArrayLength())
+	if (*idString == 0 && context.WantExists())
 	{
-		return ExpressionValue(val.GetType() != TypeCode::None);
+		return ExpressionValue((context.WantArrayLength()) ? val.CanIndexOrCountBits() : val.GetType() != TypeCode::None);
 	}
 
 	// Here we need to handle separately all the types that can be indexed.
@@ -1327,10 +1345,6 @@ decrease(strlen(idString))	// recursion variant
 			{
 				if (context.WantArrayLength())
 				{
-					if (context.WantExists())
-					{
-						return ExpressionValue(true);
-					}
 					const ObjectModelArrayTableEntry *const entry = _ecv_not_null(val.omVal->GetObjectModelArrayEntry(val.param & 0xFF));
 					ReadLocker lock(entry->lockPointer);
 					return ExpressionValue((int32_t)entry->GetNumElements(this, context));
@@ -1374,10 +1388,6 @@ decrease(strlen(idString))	// recursion variant
 			{
 				if (context.WantArrayLength())
 				{
-					if (context.WantExists())
-					{
-						return ExpressionValue(true);
-					}
 					ReadLocker lock(Heap::heapLock);		// must have a read lock on heapLock when calling GetNumElements or GetElement
 					return ExpressionValue((int32_t)val.ahVal.GetNumElements());
 				}
@@ -1409,6 +1419,7 @@ decrease(strlen(idString))	// recursion variant
 	case TypeCode::ObjectModel_tc:
 		if (*idString == 0)
 		{
+			if (context.WantArrayLength()) { break; }
 			return val;
 		}
 		if (*idString == '.')
@@ -1428,7 +1439,7 @@ decrease(strlen(idString))	// recursion variant
 				{
 					break;
 				}
-				return (context.WantExists()) ? ExpressionValue(true) : ExpressionValue((int32_t)numSetBits);
+				return ExpressionValue((int32_t)numSetBits);
 			}
 
 			if (*idString == '^')
@@ -1514,7 +1525,7 @@ decrease(strlen(idString))	// recursion variant
 	case TypeCode::MacAddress_tc:
 		if (*idString == 0)
 		{
-			return (context.WantArrayLength()) ? ((context.WantExists()) ? ExpressionValue(true) : ExpressionValue((int32_t)17)) : val;
+			return (context.WantArrayLength()) ? ExpressionValue((int32_t)17) : val;
 		}
 		break;
 
@@ -1522,7 +1533,7 @@ decrease(strlen(idString))	// recursion variant
 	case TypeCode::CanExpansionBoardDetails:
 		if (*idString == 0)
 		{
-			return (context.WantArrayLength()) ? ((context.WantExists()) ? ExpressionValue(true) : GetExpansionBoardDetailLength(val)) : val;
+			return (context.WantArrayLength()) ? GetExpansionBoardDetailLength(val) : val;
 		}
 		break;
 #endif
@@ -1530,7 +1541,7 @@ decrease(strlen(idString))	// recursion variant
 	case TypeCode::HeapString:
 		if (*idString == 0)
 		{
-			return (context.WantArrayLength()) ? ((context.WantExists()) ? ExpressionValue(true) : ExpressionValue((int32_t)val.shVal.GetLength())) : val;
+			return (context.WantArrayLength()) ? ExpressionValue((int32_t)val.shVal.GetLength()) : val;
 		}
 		if (*idString == '^')
 		{
@@ -1559,7 +1570,7 @@ decrease(strlen(idString))	// recursion variant
 	case TypeCode::CString:
 		if (*idString == 0)
 		{
-			return (context.WantArrayLength()) ? ((context.WantExists()) ? ExpressionValue(true) : ExpressionValue((int32_t)strlen(val.sVal))) : val;
+			return (context.WantArrayLength()) ? ExpressionValue((int32_t)strlen(val.sVal)) : val;
 		}
 		if (*idString == '^')
 		{
@@ -1590,16 +1601,7 @@ decrease(strlen(idString))	// recursion variant
 			return val;
 		}
 
-#if 1	// Trying this out: when x is null: x.y, #x and x[...] return null instead of throwing an error
 		return (context.WantExists()) ? ExpressionValue(false) : val;
-#else
-		// Special case: exists(x.y), exists(#x) and exists(x[...]) return false when x is null because some OM values may be null or not
-		if (context.WantExists())
-		{
-			return ExpressionValue(false);
-		}
-		break;
-#endif
 
 	default:
 		if (*idString == 0 && !context.WantArrayLength())
@@ -1616,6 +1618,7 @@ decrease(strlen(idString))	// recursion variant
 		contract_assert(context.WantArrayLength());
 		[[fallthrough]];
 	case '^':
+		if (context.WantExists()) { return ExpressionValue(false); }
 		throw context.ConstructParseException("object is not an array");
 	case '.':
 		throw context.ConstructParseException("'.' operator applied to primitive type");

@@ -57,6 +57,9 @@ const char memPattern = (char)0xA5;		// this must be the same pattern as FreeRTO
 // Define replacement standard library functions
 #include <syscalls.h>
 
+// Define the system stack. The stack doesn't actually live here, instead the linker script uses this section to define the stack start and end symbols.
+uint32_t dummySystemStack[SystemStackSize] __attribute__ ((section (".stack"), used));
+
 // MAIN task data
 // The main task currently runs GCodes, so it needs to be large enough to hold the matrices used for delta auto calibration.
 // The worst case stack usage points are as follows:
@@ -68,17 +71,19 @@ constexpr unsigned int MainTaskStackWords = max<unsigned int>(1860, (MaxAxes * M
 #else
 // On other processors we use matrices of floats when doing auto calibration
 // Increase minimum stack words to 1370 for WPA Enterprise support (now 1430 after increasing GCodeReplyLength)
-constexpr unsigned int MainTaskStackWords = max<unsigned int>(1430, (MaxAxes * MaxAxes * 2) + 610);
+constexpr unsigned int MainTaskStackWords = max<unsigned int>(4000, (MaxAxes * MaxAxes * 2) + 610);
 #endif
 
-static Task<MainTaskStackWords> mainTask;
+static TASKMEM Task<MainTaskStackWords> mainTask;
 extern "C" [[noreturn]] void MainTask(void * pvParameters) noexcept;
+#if !TGBTC
 extern DeviceVectors exception_table;
+#endif
 
 // Idle task data
 // The timer and idle tasks currently never do I/O, so they don't need much stack.
 constexpr unsigned int IdleTaskStackWords = 50;				// currently we don't use the idle task for anything, so this can be quite small
-static Task<IdleTaskStackWords> idleTask;
+static TASKMEM Task<IdleTaskStackWords> idleTask;
 
 extern "C" void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, configSTACK_DEPTH_TYPE *pulIdleTaskStackSize) noexcept
 {
@@ -111,6 +116,7 @@ extern "C" void GetMallocMutex() noexcept
 {
 	if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)		// don't take mutex if scheduler not started or suspended
 	{
+		configASSERT(__get_BASEPRI() == 0 && __get_PRIMASK() == 0);	// taking the mutex re-enables masked interrupts, so catch callers that allocate while interrupts are masked
 		mallocMutex.Take();
 	}
 }
@@ -179,8 +185,7 @@ void *Tasks::GetNVMBuffer(const uint32_t *_ecv_array _ecv_null stk) noexcept
 #ifdef INDX
 	SetPinMode(CanBufferDisablePin, OUTPUT_HIGH);							// turn the CAN buffer off, it may interfere with USB on v0.1 boards
 #endif
-
-#if !defined(DEBUG)		// don't check the CRC of a debug build because debugger breakpoints mess up the CRC
+#if !defined(DEBUG) && !TGBTC	// don't check the CRC of a debug build because debugger breakpoints mess up the CRC
 	// Check the integrity of the firmware by checking the firmware CRC
 	// If we have embedded files then the CRC is stored after those files, so we need to fetch the CRC address from the vector table
 	{
@@ -207,7 +212,7 @@ void *Tasks::GetNVMBuffer(const uint32_t *_ecv_array _ecv_null stk) noexcept
 			}
 		}
 	}
-#endif	// !defined(DEBUG)
+#endif	// !defined(DEBUG) && !TGBTC
 
 	// Fill the free memory with a pattern so that we can check for stack usage and memory corruption
 	char *_ecv_array heapend = heapTop;
@@ -248,7 +253,7 @@ void *Tasks::GetNVMBuffer(const uint32_t *_ecv_array _ecv_null stk) noexcept
 	// We could also trap unaligned memory access, if we change the gcc options to not generate code that uses unaligned memory access.
 	SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
 
-#if !SAME5x
+#if SAME70 || SAM4E || SAM4S
 	// When doing a software reset, we disable the NRST input (User reset) to prevent the negative-going pulse that gets generated on it being held
 	// in the capacitor and changing the reset reason from Software to User. So enable it again here. We hope that the reset signal will have gone away by now.
 # ifndef RSTC_MR_KEY_PASSWD
@@ -292,16 +297,16 @@ extern "C" [[noreturn]] void MainTask(void *pvParameters) noexcept
 	}
 }
 
-// Return the amount of free handler stack space. It may be negative if the stack has overflowed into the area reserved for the heap.
+// Return the amount of free handler stack space in words. It may be negative if the stack has overflowed into the area reserved for the heap.
 static ptrdiff_t GetHandlerFreeStack() noexcept
 {
-	const char *_ecv_array const ramend = (const char *_ecv_array)&_estack;
+	const char *_ecv_array const ramend = sysStackTop;
 	const char *_ecv_array stack_lwm = sysStackLimit;
 	while (stack_lwm < ramend && *stack_lwm == memPattern)
 	{
 		++stack_lwm;
 	}
-	return stack_lwm - sysStackLimit;
+	return (stack_lwm - sysStackLimit) >> 2;
 }
 
 ptrdiff_t Tasks::GetNeverUsedRam() noexcept
@@ -363,7 +368,14 @@ void Tasks::Diagnostics(const StringRef& reply) noexcept
 #endif
 		const struct mallinfo mi = mallinfo();
 		reply.lcatf("RAM: static %d, dynamic %d (%d recycled), never used %d, free sys stack %d",
-					(const char *_ecv_array)&_end - ramstart, mi.uordblks, mi.fordblks, GetNeverUsedRam(), GetHandlerFreeStack()/4);
+					(const char *_ecv_array)&_end - ramstart, mi.uordblks, mi.fordblks, GetNeverUsedRam(), GetHandlerFreeStack());
+#if (TGBTC && STM32F4)
+		{
+			size_t ccmStatic, ccmUsed, ccmFree;
+			CoreCCMRAMUsage(ccmStatic, ccmUsed, ccmFree);
+			reply.lcatf("CCMRam: static: %d dynamic: %d free: %d\n", ccmStatic, ccmUsed, ccmFree);
+		}
+#endif
 	}	// end memory stats scope
 
 	const uint64_t timeSinceLastCall = TaskResetRunTimeCounter();

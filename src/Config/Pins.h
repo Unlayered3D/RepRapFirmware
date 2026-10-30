@@ -27,7 +27,10 @@
 # elif defined(FMDC_V03)
 #  define DUET3MINI		1
 #  define PLATFORM FMDC
-# else
+# elif defined(TG_BTC)
+#  define TGBTC			1
+#  define PLATFORM TeamGloomy_BTC
+#else
 #  error Unknown platform
 # endif
 #endif
@@ -200,6 +203,10 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 # define ENFORCE_MAX_VIN		0
 #endif
 
+#ifndef HAS_ATX_POWER_MONITOR
+# define HAS_ATX_POWER_MONITOR  0
+#endif
+
 // HAS_LWIP_NETWORKING refers to Lwip 2 support in the Networking folder, not legacy SAM3XA networking using Lwip 1
 #ifndef HAS_LWIP_NETWORKING
 # define HAS_LWIP_NETWORKING	0
@@ -295,12 +302,12 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 #define SUPPORT_PHASE_STEPPING	0
 #endif
 
-#ifdef SUPPORT_S_CURVE
-# if SUPPORT_S_CURVE && !SUPPORT_PHASE_STEPPING
+#ifdef SUPPORT_3RD_ORDER
+# if SUPPORT_3RD_ORDER && !SUPPORT_PHASE_STEPPING
 #  error Cannot support S Curve acceleration without phase stepping
 # endif
 #else
-# define SUPPORT_S_CURVE		0
+# define SUPPORT_3RD_ORDER		0
 #endif
 
 #ifndef SUPPORT_PROBE_POINTS_FILE
@@ -341,7 +348,7 @@ constexpr size_t NumAuxChannels = NumSerialChannels - FirstAuxChannel;
 #endif
 
 // We must define MCU_HAS_UNIQUE_ID as either 0 or 1 so we can use it in maths
-#if SAM4E || SAM4S || SAME70 || SAME5x
+#if SAM4E || SAM4S || SAME70 || SAME5x || STM32H7 || STM32F4
 # define MCU_HAS_UNIQUE_ID		1
 #else
 # define MCU_HAS_UNIQUE_ID		0

@@ -30,7 +30,6 @@
 {
 	IrqDisable();								// disable interrupts before we call any flash functions. We don't enable them again.
 	WatchdogReset();							// kick the watchdog
-
 #if SAME70 || SAM4E
 	WatchdogResetSecondary();					// kick the secondary watchdog
 #endif
@@ -43,6 +42,8 @@
 #if SAME5x
 		// Start from uf2 bootloader next time. This pretends the reset button has been pressed twice in short succession
 		*DBL_TAP_PTR = DBL_TAP_MAGIC;
+#elif STM32
+		// Nothing to do
 #else
 		EraseAndReset();
 #endif
@@ -80,7 +81,9 @@
         mem->EnsureWritten();
 	}
 
-#if !SAME5x
+#if STM32
+	// FIXME add any STM specific code here
+#elif !SAME5x
 	RSTC->RSTC_MR = RSTC_MR_KEY_PASSWD;			// ignore any signal on the NRST pin for now so that the reset reason will show as Software
 #endif
 	ResetProcessor();
@@ -119,7 +122,7 @@ void HardFault_Handler() noexcept
 
 #if USE_MPU
 
-extern "C" [[noreturn]] void memManageDispatcher(const uint32_t *_ecv_array pulFaultStackAddress) noexcept
+extern "C" [[noreturn]] __attribute__((externally_visible)) void memManageDispatcher(const uint32_t *_ecv_array pulFaultStackAddress) noexcept
 {
 	SoftwareReset(SoftwareResetReason::memFault, pulFaultStackAddress);
 }
@@ -148,6 +151,8 @@ extern "C" [[noreturn]] __attribute__((externally_visible)) void wdtFaultDispatc
 	SoftwareReset(SoftwareResetReason::wdtFault, pulFaultStackAddress);
 }
 
+
+#if !STM32
 #if SAME70		// SAME70 has a separate interrupt line for the RSWDT
 extern "C" void RSWDT_Handler() noexcept __attribute__((naked));
 void RSWDT_Handler() noexcept
@@ -168,6 +173,7 @@ void WDT_Handler() noexcept
 		" handler_wdt_address_const: .word wdtFaultDispatcher       \n"
 	);
 }
+#endif
 
 extern "C" [[noreturn]] __attribute__((externally_visible)) void otherFaultDispatcher(const uint32_t *_ecv_array pulFaultStackAddress) noexcept
 {

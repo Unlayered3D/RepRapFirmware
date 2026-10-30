@@ -27,6 +27,8 @@ protected:
 	uint32_t uploadedBytes;								// how many bytes have already been written
 	bool uploadError;
 	bool dummyUpload;
+	static unsigned numUploads;
+	static unsigned numUploadErrors;
 #endif
 
 	String<MaxFilenameLength> filenameBeingProcessed;	// usually the name of the file being uploaded, but also used by HttpResponder and FtpResponder

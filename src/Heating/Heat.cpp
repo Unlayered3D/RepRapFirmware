@@ -64,7 +64,7 @@ constexpr uint32_t HeaterTaskStackWords = 440;			// task stack size in dwords, m
 														// In 3.6.0 and 3.6.1 we are getting strange crashes within the I2C driver when called from the Heat task, so increased again to 440.
 #endif
 
-static Task<HeaterTaskStackWords> heaterTask;
+static TASKMEM Task<HeaterTaskStackWords> heaterTask;
 
 TaskHandle Heat::GetHeatTask() noexcept
 {
@@ -952,12 +952,13 @@ void Heat::SetFanFeedForwardPwm(unsigned int heater, float fanPwm) const noexcep
 }
 
 // Update the heater feedforward because of a change in the extrusion rate
-void Heat::SetExtrusionFeedForward(unsigned int heater, float pwmBoost, float tempBoost) const noexcept
+void Heat::SetExtrusionFeedForward(unsigned int heater, float pwmBoost, float tempBoost, bool isNonPrintingMove) const noexcept
 {
 	const auto h = FindHeater(heater);
 	if (h.IsNotNull())
 	{
-		h->SetExtrusionFeedForward(pwmBoost, tempBoost);
+		h->SetExtrusionFeedForward(pwmBoost, tempBoost, isNonPrintingMove);
+		//debugPrintf("FF %u %.2f %.2f\n", heater, (double)pwmBoost, (double)tempBoost);
 	}
 }
 
@@ -1034,7 +1035,7 @@ GCodeResult Heat::ConfigureHeaterMonitoring(size_t heater, GCodeBuffer& gb, cons
 // Process M303
 GCodeResult Heat::TuneHeater(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
 {
-	// To tune a heater, a heater number and/or a tool number musty be given
+	// To tune a heater, a heater number and/or a tool number must be given
 	FansBitmap fans;
 	int heaterNumber = 0;											// initialised only to suppress gcc warning
 	const bool seenHeater = gb.Seen('H');

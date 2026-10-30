@@ -29,26 +29,14 @@ struct EndstopHitDetails
 {
 	EndstopHitDetails() noexcept
 		: action((uint32_t)EndstopHitAction::none), internalUse(0), axis(NO_AXIS), setAxisLow(false), setAxisHigh(false), isZProbe(false)
-#if SUPPORT_CAN_EXPANSION
-			, haveTriggerTime(false)
-#endif
 	{
 	}
 
-	void SetAction(EndstopHitAction a
-#if SUPPORT_CAN_EXPANSION
-		, uint16_t p_whenTriggered, bool p_haveTriggerTime
-#endif
-		) noexcept
-	{
-		action = (uint32_t)a;
-#if SUPPORT_CAN_EXPANSION
-		whenTriggered = p_whenTriggered; haveTriggerTime = p_haveTriggerTime;
-#endif
-	}
+	void SetAction(EndstopHitAction a, uint32_t p_whenTriggered, bool p_haveTriggerTime) noexcept;
 
 	EndstopHitAction GetAction() const noexcept { return (EndstopHitAction)action; }
 
+	uint32_t whenTriggered;			// step timer value when the endstop or probe was triggered
 	uint16_t action : 2,			// an EndstopHitAction
 			 internalUse : 4,		// used to pass the port index between CheckTriggered() and Acknowledge()
 			 axis : 6,				// which axis to stop if the action is stopAxis, and which axis to set the position of if setAxisLow or SetAxisHigh is true
@@ -56,11 +44,6 @@ struct EndstopHitDetails
 			 setAxisHigh : 1,		// whether or not to set the axis position to its max
 			 isZProbe : 1;			// whether this is a Z probe
 	DriverId driver;
-
-#if SUPPORT_CAN_EXPANSION
-	bool haveTriggerTime;
-	uint16_t whenTriggered;
-#endif
 
 	static_assert(MaxAxes <= 64);				// because we have allocated 6 bits to hold the axis number
 };
@@ -82,6 +65,7 @@ NamedEnum
 	zProbeAsEndstop,
 	motorStallAny,
 	motorStallIndividual,
+	motorStallEncoder,
 	numInputTypes
 );
 
@@ -90,7 +74,7 @@ enum class ZProbeType : uint8_t
 	none = 0,
 	analog = 1,
 	dumbModulated = 2,
-	alternateAnalog = 3,
+	alternateAnalog_obsolete = 3,
 	endstopSwitch_obsolete = 4,
 	digital = 5,
 	e1Switch_obsolete = 6,
@@ -99,8 +83,10 @@ enum class ZProbeType : uint8_t
 	blTouch = 9,
 	zMotorStall = 10,
 	scanningAnalog = 11,
-	differentialAnalog = 12,		// triggers on the filtered change in the reading, not its absolute level
-	numTypes = 13					// must be 1 higher than the last type
+	differentialAnalog = 12,		// Unlayered: triggers on the filtered change in the reading, not its absolute level.
+									// Shipped configs use M558 P12, so it keeps 12 and upstream's load cell moves to 13.
+	loadCell = 13,
+	numTypes = 14					// must be 1 higher than the last type
 };
 
 #endif /* SRC_ENDSTOPS_ENDSTOPDEFS_H_ */

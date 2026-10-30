@@ -155,6 +155,12 @@ void IoPort::Release() noexcept
 {
 	if (IsValid() && !isSharedInput)
 	{
+#if TGBTC
+		if (logicalPinModes[logicalPin] == OUTPUT_PWM_HIGH || logicalPinModes[logicalPin] == OUTPUT_PWM_LOW)
+		{
+			AnalogOut::ReleasePWMPin(GetPinNoCheck());
+		}
+#endif
 		DetachInterrupt();
 #if SAME5x
 		ClearAnalogCallback();
@@ -176,7 +182,12 @@ void IoPort::DetachInterrupt() const noexcept
 {
 	if (IsValid() && !isSharedInput)
 	{
+		//detachInterrupt(GetPinNoCheck());
+#if TGBTC
+		DetachPinInterrupt(GetPinNoCheck());
+#else
 		DetachPinInterrupt(logicalPin);
+#endif
 	}
 }
 
@@ -396,7 +407,11 @@ void IoPort::AppendPinName(const StringRef& str) const noexcept
 {
 	if (IsValid())
 	{
+#if TGBTC
+		const char *_ecv_array _ecv_null pn = GetPinNames(logicalPin);
+#else
 		const char *_ecv_array _ecv_null pn = PinTable[logicalPin].GetNames();
+#endif
 		if (pn != nullptr)
 		{
 #if SUPPORT_REMOTE_COMMANDS
@@ -498,7 +513,12 @@ Pin IoPort::GetPin() const noexcept
 // Get the capabilities of the pin
 PinCapability IoPort::GetCapability() const noexcept
 {
+#if TGBTC
+	// TODO: Although consider adding pin specific data from CoreNG tables
+	return (IsValid()) ? PinCapability::all : PinCapability::none;
+#else
 	return (IsValid()) ? PinTable[GetPinNoCheck()].cap : PinCapability::none;
+#endif
 }
 
 bool IoPort::ReadDigital() const noexcept
@@ -644,7 +664,12 @@ void PwmPort::WriteAnalog(float pwm) const noexcept
 
 bool PwmPort::SupportsPwm() const noexcept
 {
+#if TGBTC
+	// All TGBTC pins can use PWM (either hardware or software).
+	return IsValid();
+#else
 	return IsValid() && (((uint8_t)PinTable[logicalPin].GetCapability() & (uint8_t)PinCapability::pwm) != 0);
+#endif
 }
 
 // End

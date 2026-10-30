@@ -108,6 +108,11 @@ public:
 		return not_null(f)->Write(s, len);
 	}
 
+	int CanWrite() noexcept
+	{
+		return f->CanWrite();
+	}
+
 	// This returns the CRC32 of data written to a newly-created file. It does not calculate the CRC of an existing file.
 	uint32_t GetCrc32() const noexcept
 	pre(IsLive())

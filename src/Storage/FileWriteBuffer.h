@@ -9,11 +9,18 @@
 #define SRC_STORAGE_FILEWRITEBUFFER_H_
 
 #include "RepRapFirmware.h"
+#if HAS_WRITER_TASK
+#include <RTOSIface/RTOSIface.h>
+#endif
 
-#if SAME70
+#if SAME70 || (TGBTC && STM32H7)
 constexpr size_t NumFileWriteBuffers = 2;					// Number of write buffers
 constexpr size_t FileWriteBufLen = 8192;					// Size of each write buffer
 constexpr size_t SbcFileWriteBufLen = 4096;					// Available size of each write buffer in SBC mode
+#elif (TGBTC && STM32F4)
+constexpr size_t NumFileWriteBuffers = 1;
+constexpr size_t FileWriteBufLen = 8192;
+constexpr size_t SbcFileWriteBufLen = 4096;
 #elif SAM4E || SAM4S || SAME5x
 constexpr size_t NumFileWriteBuffers = 1;					// Number of write buffers
 constexpr size_t FileWriteBufLen = 8192;					// Size of each write buffer
@@ -22,6 +29,9 @@ constexpr size_t SbcFileWriteBufLen = 4096;					// Available size of each write 
 # error Unsupported processor
 #endif
 static_assert(FileWriteBufLen >= SbcFileWriteBufLen, "File write buffer must be at least as big as the configured SBC threshold");
+#if HAS_SBC_INTERFACE
+constexpr size_t NumSbcFileWriteBuffers = (NumFileWriteBuffers * FileWriteBufLen) / SbcFileWriteBufLen;	// In SBC mode the same storage is split into smaller buffers so that writes can be double-buffered
+#endif
 
 // Class to cache data that is about to be written to the SD card. This is NOT a ring buffer,
 // instead it just provides simple interfaces to cache a certain amount of data so that fewer
@@ -29,12 +39,9 @@ static_assert(FileWriteBufLen >= SbcFileWriteBufLen, "File write buffer must be 
 class FileWriteBuffer
 {
 public:
-#if SAME70
-	FileWriteBuffer(FileWriteBuffer *_ecv_null n, char *_ecv_array storage) noexcept : next(n), index(0), buf(storage) { }
-#else
-	explicit FileWriteBuffer(FileWriteBuffer *_ecv_null n) noexcept : next(n), index(0) { }
-#endif
-	static void UsingSbcMode() noexcept { fileWriteBufLen = SbcFileWriteBufLen; }	// only called by RepRap on startup
+	FileWriteBuffer() noexcept : next(nullptr), index(0), buf(nullptr) { }
+	void Init(FileWriteBuffer *_ecv_null n, char *_ecv_array storage) noexcept { next = n; index = 0; buf = storage; }
+	static void ConfigureSbcBuffering() noexcept { fileWriteBufLen = SbcFileWriteBufLen; }	// only called by MassStorage on startup
 
 	FileWriteBuffer *_ecv_null Next() const noexcept { return next; }
 	void SetNext(FileWriteBuffer *_ecv_null n) noexcept { next = n; }
@@ -47,17 +54,25 @@ public:
 	size_t Store(const char *_ecv_array data, size_t length) noexcept;				// Stores some data and returns how much could be stored
 	void DataTaken() noexcept { index = 0; }							// Called to indicate that the buffer has been written to the SD card
 	void DataStored(size_t numBytes) noexcept { index += numBytes; }	// Called when more data has been stored directly in the buffer
+#if HAS_WRITER_TASK
+	void BindToFile(FileStore *fs) noexcept;
+	static void Spin() noexcept;
+	static void InitWriterTask() noexcept;
+	bool StartFlushBuffer() noexcept;
+	bool WaitFlushComplete() noexcept;
+#endif
 
 private:
 	static size_t fileWriteBufLen;
 	FileWriteBuffer *_ecv_null next;
 
 	size_t index;
-#if SAME70
-	char *_ecv_array buf;
-#else
-	alignas(4) char buf[FileWriteBufLen];								// 32-bit aligned buffer for better HSMCI performance
+#if HAS_WRITER_TASK
+	volatile bool writePending;
+	volatile TaskHandle waitingTask;
+	FileStore *fileToWrite;
 #endif
+	char *_ecv_array buf;
 };
 
 inline size_t FileWriteBuffer::Store(const char *_ecv_array data, size_t length) noexcept

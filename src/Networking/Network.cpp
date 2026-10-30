@@ -57,14 +57,15 @@
 #if SUPPORT_MULTICAST_DISCOVERY
 # include "MulticastDiscovery/MulticastResponder.h"
 #endif
+constexpr uint32_t MaxHighPrioritySpinTime = 500/StepClocksToMillis;	
 
 #if defined(DEBUG)
 constexpr size_t NetworkStackWords = 1000;				// needs to be enough to support rr_model
 #else
-constexpr size_t NetworkStackWords = 600;				// needs to be enough to support rr_model
+constexpr size_t NetworkStackWords = 740;				// needs to be enough to support rr_model. For Hangprinter in 3.7.0 we need at least 669 words.
 #endif
 
-static Task<NetworkStackWords> networkTask;
+static TASKMEM Task<NetworkStackWords> networkTask;
 
 #else
 const char *_ecv_array const notSupportedText = "Networking is not supported on this hardware";
@@ -104,6 +105,12 @@ Network::Network(Platform& p) noexcept : platform(p)
 	interfaces[0] = new WiFiInterface(p);
 # elif defined(DUET_M)
 	interfaces[0] = new W5500Interface(p);
+# elif TGBTC
+#  if HAS_WIFI_NETWORKING
+	interfaces[0] = new WiFiInterface(p);
+#  else
+	interfaces[0] = nullptr;
+#  endif
 # else
 #  error Unknown board
 # endif
@@ -699,6 +706,7 @@ bool Network::IsWiFiInterface(unsigned int interface) const noexcept
 // Main spin loop, called by the Network task
 void Network::Spin() noexcept
 {
+	uint32_t highPriorityTime = 0;
 	for (;;)
 	{
 		const uint32_t lastTime = StepTimer::GetTimerTicks();
@@ -745,11 +753,12 @@ void Network::Spin() noexcept
 		{
 			slowLoop = dt;
 		}
-
-		if (!doneSomething)
+		highPriorityTime += dt;
+		if (!doneSomething || highPriorityTime > MaxHighPrioritySpinTime)
 		{
 			TaskBase::SetCurrentTaskPriority(TaskPriority::SpinPriority);		// restore normal priority
 			RTOSIface::Yield();
+			highPriorityTime = 0;
 		}
 	}
 }

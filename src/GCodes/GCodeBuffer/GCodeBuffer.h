@@ -59,6 +59,7 @@ public:
 	GCodeBuffer(GCodeChannel::RawType channel, GCodeInput *_ecv_from normalIn, FileGCodeInput *_ecv_null fileIn, MessageType mt, Compatibility::RawType c = Compatibility::RepRapFirmware) noexcept;
 	void Reset() noexcept;															// Reset it to its state after start-up
 	void Init() noexcept;															// Set it up to parse another G-code
+	void DiscardPartialLine() noexcept;												// Throw away any line that we have only partly received
 	void Disable() noexcept;														// Disable input from the associated port
 	void Enable(uint32_t commsProperties) noexcept;									// Enable input and set the CRC or checksum requirements
 	void Diagnostics(const StringRef& reply) noexcept;								// Write some debug info
@@ -338,6 +339,9 @@ protected:
 private:
 	const char *_ecv_array GetStateText() const noexcept;
 
+	void SaveInvokingCommand() noexcept;								// remember the current command when pushing a macro frame
+	void RestoreInvokingCommand(const GCodeMachineState& ms) noexcept;	// reinstate it as the reported command when a macro frame is popped
+
 	FilePosition printFilePositionAtMacroStart;			// the saved file position when we started executing a macro
 	GCodeInput *_ecv_from normalInput;					// Our normal input stream, or nullptr if there isn't one
 
@@ -355,6 +359,15 @@ private:
 
 	GCodeMachineState *machineState;					// Machine state for this gcode source
 	ExpressionValue m291Result;							// the value entered or choice selected in response to a M291 command
+
+	// When a macro returns, the command that invoked it is restored here so that error messages emitted by the resumed state machine (e.g. probing)
+	// are attributed to the invoking command such as G29/G30 rather than to the macro's last command. Applies to both parsers because the command
+	// getters below return these values while restoredCommandValid is set. Cleared as soon as the next command is parsed
+	char restoredCommandLetter;
+	int restoredCommandNumber;
+	int8_t restoredCommandFraction;
+	bool restoredHasCommandNumber;
+	bool restoredCommandValid = false;
 
 	uint32_t receivedLineNumber;						// The line number received explicitly in the N field of the GCode command line
 	uint32_t whenTimerStarted;							// When we started waiting
@@ -384,15 +397,19 @@ private:
 	// Accessed only when the GB mutex is acquired
 	String<MaxFilenameLength> requestedMacroFile;
 	bool isBinaryBuffer;
+
 	uint8_t
 		macroJustStarted : 1,		// Whether the GB has just started a macro file
 		macroFileError : 1,			// Whether the macro file could be opened or if an error occurred
-		macroFileEmpty : 1,			// Whether the macro file is actually empty
-		abortFile : 1,				// Whether to abort the last file on the stack
-		abortAllFiles : 1,			// Whether to abort all opened files
-		sendToSbc : 1,				// Indicates if the GB string content is supposed to be sent to the SBC
-		messagePromptPending : 1,	// Has the SBC been notified about a message waiting for acknowledgement?
-		messageAcknowledged : 1;	// Last message has been acknowledged
+		macroFileEmpty : 1;			// Whether the macro file is actually empty
+
+	// Cleared by the SBC task under the GB mutex but set by the main task without it (MessageBoxClosed, AbortFile from other channels),
+	// so each has a byte of its own: a stale read-modify-write of a shared bitfield byte would undo the SBC task's change
+	bool abortFile;					// Whether to abort the last file on the stack
+	bool abortAllFiles;				// Whether to abort all opened files
+	bool sendToSbc;					// Indicates if the GB string content is supposed to be sent to the SBC
+	bool messagePromptPending;		// Has the SBC been notified about a message waiting for acknowledgement?
+	bool messageAcknowledged;		// Last message has been acknowledged
 
 	// Accessed only by the SBC task
 	bool invalidated;				// Set to true if the GB content is not valid and about to be cleared

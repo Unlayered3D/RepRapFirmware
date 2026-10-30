@@ -18,13 +18,20 @@
 #endif
 
 // Stall detection endstop constructor, used for axis endstops
-StallDetectionEndstop::StallDetectionEndstop(uint8_t p_axis, EndStopPosition pos, bool p_individualMotors) noexcept
+StallDetectionEndstop::StallDetectionEndstop(uint8_t p_axis, EndStopPosition pos, bool p_individualMotors, bool p_useEncoder) noexcept
 	: Endstop(p_axis, pos),
 #if SUPPORT_CAN_EXPANSION
 	  newStallReported(false),
 #endif
-	  individualMotors(p_individualMotors)
+	  individualMotors(p_individualMotors), useEncoder(p_useEncoder)
 {
+}
+
+EndStopType StallDetectionEndstop::GetEndstopType() const noexcept
+{
+	return useEncoder ? EndStopType::motorStallEncoder
+			: individualMotors ? EndStopType::motorStallIndividual
+				: EndStopType::motorStallAny;
 }
 
 // Constructor used for extruder endstops
@@ -33,7 +40,7 @@ StallDetectionEndstop::StallDetectionEndstop() noexcept
 #if SUPPORT_CAN_EXPANSION
 	  newStallReported(false),
 #endif
-	  individualMotors(false), stopAll(true)
+	  individualMotors(false), useEncoder(false), stopAll(true)
 {
 }
 
@@ -103,7 +110,7 @@ void StallDetectionEndstop::AddDriverToMonitoredList(DriverId did, float speed) 
 	{
 		try
 		{
-			CanInterface::EnableRemoteStallEndstop(did, fabsf(speed));						// may throw
+			CanInterface::EnableRemoteStallEndstop(did, fabsf(speed), useEncoder);			// may throw
 		}
 		catch (GCodeException&)
 		{
@@ -130,6 +137,10 @@ void StallDetectionEndstop::AddDriverToMonitoredList(DriverId did, float speed) 
 	else
 #endif
 	{
+		if (useEncoder)
+		{
+			ThrowGCodeException("driver %u has no encoder, so it cannot use an encoder endstop", did.localDriver);
+		}
 #if HAS_STALL_DETECT
 		reprap.GetMove().CheckStallDetectionViable(did.localDriver, speed);
 		localDriversMonitored.SetBit(did.localDriver);
@@ -151,19 +162,11 @@ EndstopHitDetails StallDetectionEndstop::GetResult(
 	rslt.axis = GetAxis();
 	if (rslt.axis == NO_AXIS)
 	{
-		rslt.SetAction(EndstopHitAction::stopAll
-#if SUPPORT_CAN_EXPANSION
-						, whenTriggered, haveTriggerTime
-#endif
-					  );
+		rslt.SetAction(EndstopHitAction::stopAll, whenTriggered, haveTriggerTime);
 	}
 	else if (stopAll)
 	{
-		rslt.SetAction(EndstopHitAction::stopAll
-#if SUPPORT_CAN_EXPANSION
-						, whenTriggered, haveTriggerTime
-#endif
-					  );
+		rslt.SetAction(EndstopHitAction::stopAll, whenTriggered, haveTriggerTime);
 		if (GetAtHighEnd())
 		{
 			rslt.setAxisHigh = true;
@@ -175,11 +178,7 @@ EndstopHitDetails StallDetectionEndstop::GetResult(
 	}
 	else if (individualMotors && numDriversLeft > 1)
 	{
-		rslt.SetAction(EndstopHitAction::stopDriver
-#if SUPPORT_CAN_EXPANSION
-						, whenTriggered, haveTriggerTime
-#endif
-					  );
+		rslt.SetAction(EndstopHitAction::stopDriver, whenTriggered, haveTriggerTime);
 #if SUPPORT_CAN_EXPANSION
 		rslt.driver.boardAddress = boardAddress;
 #endif
@@ -187,11 +186,7 @@ EndstopHitDetails StallDetectionEndstop::GetResult(
 	}
 	else
 	{
-		rslt.SetAction(EndstopHitAction::stopAxis
-#if SUPPORT_CAN_EXPANSION
-						, whenTriggered, haveTriggerTime
-#endif
-					  );
+		rslt.SetAction(EndstopHitAction::stopAxis, whenTriggered, haveTriggerTime);
 		if (GetAtHighEnd())
 		{
 			rslt.setAxisHigh = true;
@@ -303,10 +298,11 @@ void StallDetectionEndstop::DeleteRemoteStallEndstops() noexcept
 									}
 								  );
 	remoteDriversMonitored.Clear();
+	newStallReported = false;						// otherwise Stopped() keeps reporting the endstop as triggered until the next homing move primes it
 }
 
 // Record any notifications of stalled remote drivers that we are interested in
-void StallDetectionEndstop::HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled, uint16_t when) noexcept
+void StallDetectionEndstop::HandleStalledRemoteDrivers(CanAddress boardAddress, LocalDriversBitmap driversReportedStalled, uint32_t when) noexcept
 {
 	remoteDriversMonitored.IterateWhile([this, boardAddress, driversReportedStalled, when](RemoteDriversMonitored& entry, size_t count) noexcept -> bool
 										{

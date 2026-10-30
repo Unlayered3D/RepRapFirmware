@@ -4,8 +4,9 @@
  *  Created on: 23 Jan 2016
  *      Author: David
  */
-
 #include "TMC22xx.h"
+// On the TG platform we have a replacement for this
+#if !TGBTC
 
 #if SUPPORT_TMC22xx
 
@@ -373,9 +374,17 @@ constexpr uint32_t CHOPCONF_HSTRT_SHIFT = 4;				// hysteresis start
 constexpr uint32_t CHOPCONF_HSTRT_MASK = 0x07 << CHOPCONF_HSTRT_SHIFT;
 constexpr uint32_t CHOPCONF_HEND_SHIFT = 7;					// hysteresis end
 constexpr uint32_t CHOPCONF_HEND_MASK = 0x0F << CHOPCONF_HEND_SHIFT;
+#if SUPPORT_TMC2240
+constexpr uint32_t CHOPCONF_2240_FD3 = 1u << 11;			// MSB of fast decay time setting TFD
+constexpr uint32_t CHOPCONF_2240_DISFDCC = 1u << 12;		// disables fast decay mode when CHM = 1
+#endif
 constexpr uint32_t CHOPCONF_TBL_SHIFT = 15;					// blanking time
 constexpr uint32_t CHOPCONF_TBL_MASK = 0x03 << CHOPCONF_TBL_SHIFT;
 constexpr uint32_t CHOPCONF_VSENSE_HIGH = 1 << 17;			// use high sensitivity current scaling
+#if SUPPORT_TMC2240
+constexpr uint32_t CHOPCONF_2240_TPFD_SHIFT = 20;				// Passive fast decay time, allows dampening of motor mid-range resonances
+constexpr uint32_t CHOPCONF_2240_TPFD_MASK = 0x0F << CHOPCONF_2240_TPFD_SHIFT;
+#endif
 constexpr uint32_t CHOPCONF_MRES_SHIFT = 24;				// microstep resolution
 constexpr uint32_t CHOPCONF_MRES_MASK = 0x0F << CHOPCONF_MRES_SHIFT;
 constexpr uint32_t CHOPCONF_INTPOL = 1 << 28;				// use interpolation
@@ -384,6 +393,11 @@ constexpr uint32_t CHOPCONF_DISS2G = 1 << 30;				// disable short to ground prot
 constexpr uint32_t CHOPCONF_DISS2VS = 1 << 31;				// disable low side short protection
 
 constexpr uint32_t DefaultChopConfReg = 0x00000053 | CHOPCONF_VSENSE_HIGH;	// this is the reset default + CHOPCONF_VSENSE_HIGH - CHOPCONF_INTPOL. Try it until we find something better.
+constexpr uint32_t UserSettableChopConfBits_2209 = CHOPCONF_TBL_MASK | CHOPCONF_HSTRT_MASK | CHOPCONF_HEND_MASK | CHOPCONF_TOFF_MASK;
+#if SUPPORT_TMC2240
+constexpr uint32_t UserSettableChopConfBits_2240 = CHOPCONF_TBL_MASK | CHOPCONF_HSTRT_MASK | CHOPCONF_HEND_MASK | CHOPCONF_TOFF_MASK
+												| CHOPCONF_2240_TPFD_MASK | CHOPCONF_2240_FD3 | CHOPCONF_2240_DISFDCC;
+#endif
 
 #if RESET_MICROSTEP_COUNTERS_AT_INIT
 constexpr uint32_t ChopConf256mstep = DefaultChopConfReg;	// the default uses x256 microstepping already
@@ -561,6 +575,7 @@ public:
 	bool SetDriverMode(unsigned int mode) noexcept;
 	DriverMode GetDriverMode() const noexcept;
 	void SetCurrent(float current) noexcept;
+	float GetMaxCurrent() const noexcept;
 	void Enable(bool en) noexcept;
 #if HAS_STALL_DETECT
 	void SetStallDetectThreshold(int sgThreshold) noexcept;
@@ -1349,7 +1364,14 @@ uint32_t TmcDriverState::GetRegister(SmartDriverRegister reg) const noexcept
 	switch(reg)
 	{
 	case SmartDriverRegister::chopperControl:
-		return configuredChopConfReg & 0x01FFFF;
+		{
+			const uint32_t userMask =
+#if SUPPORT_TMC2240
+									(isTmc2240) ? UserSettableChopConfBits_2240 :
+#endif
+													UserSettableChopConfBits_2209;
+			return configuredChopConfReg & userMask;
+		}
 
 	case SmartDriverRegister::toff:
 		return (configuredChopConfReg & CHOPCONF_TOFF_MASK) >> CHOPCONF_TOFF_SHIFT;
@@ -1434,7 +1456,11 @@ bool TmcDriverState::SetChopConf(uint32_t newVal) noexcept
 	{
 		return false;
 	}
-	const uint32_t userMask = CHOPCONF_TBL_MASK | CHOPCONF_HSTRT_MASK | CHOPCONF_HEND_MASK | CHOPCONF_TOFF_MASK;	// mask of bits the user is allowed to change
+	const uint32_t userMask =
+#if SUPPORT_TMC2240
+							(isTmc2240) ? UserSettableChopConfBits_2240 :
+#endif
+											UserSettableChopConfBits_2209;
 	configuredChopConfReg = (configuredChopConfReg & ~userMask) | (newVal & userMask);
 	UpdateChopConfRegister();
 	return true;
@@ -1487,13 +1513,18 @@ DriverMode TmcDriverState::GetDriverMode() const noexcept
 // Set the motor current
 void TmcDriverState::SetCurrent(float current) noexcept
 {
-	motorCurrent = constrain<float>(current, 50.0,
+	motorCurrent = constrain<float>(current, 50.0, GetMaxCurrent());
+	UpdateCurrent();
+}
+
+float TmcDriverState::GetMaxCurrent() const noexcept
+{
+	const float maxCurrent =
 #if SUPPORT_TMC2240 && (SUPPORT_TMC2208 || SUPPORT_TMC2209)
 													(isTmc2240) ? MaximumTmc2240MotorCurrent :
 #endif
-													MaximumMotorCurrent
-									);
-	UpdateCurrent();
+													MaximumMotorCurrent;
+	return maxCurrent;
 }
 
 void TmcDriverState::UpdateCurrent() noexcept
@@ -2241,7 +2272,7 @@ void SmartDrivers::Init() noexcept
 	SetPinFunction(TMC22xxSercomTxPin, TMC22xxSercomTxPinPeriphMode);
 	SetPinFunction(TMC22xxSercomRxPin, TMC22xxSercomRxPinPeriphMode);
 
-	Serial::InitUart(TMC22xxSercomNumber, DriversBaudRate, TMC22xxSercomRxPad, TMC22xxSercomTxPad, true);
+	Serial::InitUart(TMC22xxSercomNumber, DriversBaudRate, TMC22xxSercomRxPad, TMC22xxSercomTxPad, UartMode::Mode8N1, true);
 	DmacManager::SetInterruptCallback(DmacChanTmcRx, TransferCompleteCallback, CallbackParameter(0));
 # else
 	SetPinFunction(TMC22xxUartTxPin, TMC22xxUartPeriphMode);
@@ -2367,6 +2398,11 @@ void SmartDrivers::SetCurrent(size_t drive, float current) noexcept
 	{
 		driverStates[drive].SetCurrent(current);
 	}
+}
+
+float SmartDrivers::GetMaxMotorCurrent(size_t driver) noexcept
+{
+	return (driver < GetNumTmcDrivers()) ? driverStates[driver].GetMaxCurrent() : 0.0;
 }
 
 void SmartDrivers::EnableDrive(size_t drive, bool en) noexcept
@@ -2773,6 +2809,7 @@ float SmartDrivers::GetDriverTemperature(size_t driver) noexcept
 
 #endif
 
+#endif
 #endif
 
 // End

@@ -82,7 +82,7 @@ constexpr uint16_t MinimumGpinReportInterval = 30;		// Minimum interval in milli
 // Comms defaults
 constexpr uint32_t AUX_BAUD_RATE = 57600;				// Baud rate for auxiliary UART device
 constexpr uint32_t AUX2_BAUD_RATE = 115200;				// Ditto - for second auxiliary UART device
-constexpr uint32_t UsbTimeout = 2000;					// timeout in ms for sending data to the main serial/USB port
+constexpr uint32_t UsbTimeout = 500;					// timeout in ms for sending data to the main serial/USB port
 constexpr uint32_t AuxTimeout = 2000;					// timeout in ms for PanelDue replies
 
 constexpr uint32_t UnsolicitedStatusReportInterval = 2000;	// Interval between sending unsolicited status reports, in milliseconds
@@ -106,7 +106,7 @@ constexpr unsigned int MaxBlockIndent = 10;				// maximum indentation of GCode. 
 //     Using single-precision maths and up to 9-factor calibration: (9 + 5) * 4 bytes per point
 //     Using double-precision maths and up to 9-factor calibration: (9 + 5) * 8 bytes per point
 //   So 32 points using double precision arithmetic need 3584 bytes of stack space.
-#if SAME70
+#if SAME70 || (TGBTC && STM32H7)
 constexpr size_t MaxGridProbePoints = 961;				// 961 allows us to probe e.g. 300x300 at 10mm intervals
 #else
 constexpr size_t MaxGridProbePoints = 441;				// 441 allows us to probe e.g. 400x400 at 20mm intervals
@@ -201,7 +201,7 @@ constexpr size_t ShortGCodeLength = 64;
 // When using RTOS, it is best if it is possible to fit an HTTP response header in a single buffer. Our headers are currently about 230 bytes long.
 // A note on reserved buffers: the worst case is when a GCode with a long response is processed. After string the response, there must be enough buffer space
 // for the HTTP responder to return a status response. Otherwise DWC never gets to know that it needs to make a rr_reply call and the system deadlocks.
-#if SAME70 || SAME5x
+#if SAME70 || SAME5x || (TGBTC && STM32)
 constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
 // Unlayered3D: was 40, then 64. A PanelDue-mode OM push can hold ~20 buffers for a second or more while
 // it drains over the aux link, which left fewer than MinimumBuffersForObjectModel free and made rr_model
@@ -234,7 +234,7 @@ constexpr size_t MaxReportedAxes = 5;					// This used to be fixed at 9 but even
 constexpr size_t MaxReportedAxesForPanelDue = 6;		// If the requester is PanelDue then we can return more axes because fewer fields are included
 constexpr size_t maxQueuedCodes = 16;					// How many codes can be queued?
 
-#if SAME70 || SAME5x
+#if SAME70 || SAME5x || (TGBTC && STM32H7)
 constexpr size_t MaxTrackedObjects = 64;				// How many build plate objects we track. Each one needs 12 bytes of storage, in addition to the string space on the heap.
 #else
 constexpr size_t MaxTrackedObjects = 32;				// How many build plate objects we track. Each one needs 12 bytes of storage, in addition to the string space on the heap.
@@ -244,7 +244,7 @@ constexpr size_t MaxTrackedObjects = 32;				// How many build plate objects we t
 constexpr size_t MaxExpressionArrayIndices = 5;
 
 // How many filaments we can return in the file information. Each one uses 4 bytes of statically-allocated RAM.
-#if SAME70 || SAME5x
+#if SAME70 || SAME5x || (TGBTC && STM32)
 constexpr unsigned int MaxFilaments = 20;
 #else
 constexpr unsigned int MaxFilaments = 8;
@@ -292,6 +292,9 @@ constexpr int32_t DefaultMaxSpindleRpm = 10000;			// Default spindle RPM at full
 constexpr float DefaultMaxLaserPower = 255.0;			// Power setting in M3 command for full power
 constexpr uint32_t LaserPwmIntervalMillis = 5;			// Interval (ms) between adjusting the laser PWM during acceleration or deceleration
 
+// Accelerometer support
+constexpr size_t MaxAccelerometers = 10;				// Maximum number of accelerometers addressable from the main board
+
 // I2C
 // A note on the i2C clock frequency.
 // On a Duet WiFi attached to a DueX5 through 160mm of ribbon cable, the cable capacitance in combination with the 4K7 pullup resistors slows down the
@@ -300,12 +303,12 @@ constexpr uint32_t LaserPwmIntervalMillis = 5;			// Interval (ms) between adjust
 // in a boot loop caused by the watchdog timer going off.
 // At 100kHz I2C clock frequency, these issues are rare.
 constexpr uint32_t I2cClockFreq = 100000;				// clock frequency in Hz. 100kHz is 10us per bit, so about 90us per byte if there is no clock stretching
-constexpr size_t MaxI2cOrModbusValues = 34;						// max bytes in M260 or M261 command. Increased to 34 for NeoDriver.
+constexpr size_t MaxI2cOrModbusValues = 34;				// max bytes in M260 or M261 command. Increased to 34 for NeoDriver.
 
 // File handling
-#if defined(DUET3) || defined(DUET3MINI)
+#if defined(DUET3) || defined(DUET3MINI) || TGBTC
 constexpr size_t MAX_FILES = 20;						// Must be large enough to handle the max number of concurrent web requests + file being printed + macros being executed + log file
-# if SAME70
+# if SAME70 || (TGBTC && STM32H7)
 constexpr unsigned int NumLruBuffers = 10;				// Number of disk buffers to allocate if FF_LRU is enabled in ff_config.h
 # else
 constexpr unsigned int NumLruBuffers = 5;				// Number of disk buffers to allocate if FF_LRU is enabled in ff_config.h

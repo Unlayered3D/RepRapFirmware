@@ -18,7 +18,6 @@
  Licence: GPL
 
  ****************************************************************************************************/
-
 #include "Platform.h"
 
 #include <Devices.h>
@@ -46,7 +45,6 @@
 #include <Hardware/I2C.h>
 #include <Hardware/NonVolatileMemory.h>
 #include <Storage/CRC32.h>
-#include <Accelerometers/Accelerometers.h>
 
 #if NUM_ASYNC_PORTS != 0
 # include <AsyncSerial.h>
@@ -64,6 +62,12 @@
 # include <Comms/PanelPrintStream.h>
 #endif
 
+#if TGBTC
+using LegacyAnalogIn::AdcBits;
+# include "TGBTC/BoardConfig.h"
+# include <sd_mmc.h>
+# include "ResetCause.h"
+#else
 #if SAM4E || SAM4S || SAME70
 # include <AnalogIn.h>
 # include <DmacManager.h>
@@ -75,8 +79,8 @@ static_assert(NumDmaChannelsUsed <= NumDmaChannelsSupported, "Need more DMA chan
 # include <AnalogIn.h>
 # include <DmacManager.h>
 #endif
-
 #include <Libraries/sd_mmc/sd_mmc.h>
+#endif
 
 #if HAS_WIFI_NETWORKING
 # include <Comms/FirmwareUpdater.h>
@@ -174,6 +178,9 @@ constexpr uint16_t driverV12OffAdcReading = V12VoltageToAdcReading(9.5);				// v
 
 #endif
 
+#if TGBTC
+constexpr uint32_t VRefCorrectionScale = 1 << 8;
+#endif
 // Global variable for debugging in tricky situations e.g. within ISRs
 int debugLine = 0;
 
@@ -220,9 +227,6 @@ DEFINE_GET_OBJECT_MODEL_ARRAY_TABLE(Platform)
 constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 {
 	// 0. boards[0] members
-#if SUPPORT_ACCELEROMETERS
-	{ "accelerometer",		OBJECT_MODEL_FUNC_IF(Accelerometers::HasLocalAccelerometer(), self, 4),								ObjectModelEntryFlags::none },
-#endif
 #if SUPPORT_CAN_EXPANSION
 	{ "canAddress",			OBJECT_MODEL_FUNC_NOSELF((int32_t)CanInterface::GetCanAddress()),									ObjectModelEntryFlags::none },
 #endif
@@ -230,16 +234,16 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 	{ "directDisplay",		OBJECT_MODEL_FUNC_IF_NOSELF(reprap.GetDisplay().IsPresent(), &reprap.GetDisplay()),					ObjectModelEntryFlags::none },
 #endif
 	{ "drivers",			OBJECT_MODEL_FUNC_ARRAY(0),																			ObjectModelEntryFlags::liveNotPanelDue },
-	{ "firmwareDate",		OBJECT_MODEL_FUNC_NOSELF(DateText),																	ObjectModelEntryFlags::none },
-	{ "firmwareFileName",	OBJECT_MODEL_FUNC_NOSELF(IAP_FIRMWARE_FILE),														ObjectModelEntryFlags::none },
+	{ "firmwareDate",		OBJECT_MODEL_FUNC_NOSELF(DateTimeText),																	ObjectModelEntryFlags::verbose },
+	{ "firmwareFileName",	OBJECT_MODEL_FUNC_NOSELF(IAP_FIRMWARE_FILE),														ObjectModelEntryFlags::verbose },
 	{ "firmwareName",		OBJECT_MODEL_FUNC_NOSELF(FIRMWARE_NAME),															ObjectModelEntryFlags::none },
 	{ "firmwareVersion",	OBJECT_MODEL_FUNC_NOSELF(VERSION),																	ObjectModelEntryFlags::none },
 	{ "freeRam",			OBJECT_MODEL_FUNC_NOSELF((int32_t)Tasks::GetNeverUsedRam()),										ObjectModelEntryFlags::liveNotPanelDue },
 #if HAS_SBC_INTERFACE
-	{ "iapFileNameSBC",		OBJECT_MODEL_FUNC_NOSELF(IAP_UPDATE_FILE_SBC),														ObjectModelEntryFlags::none },
+	{ "iapFileNameSBC",		OBJECT_MODEL_FUNC_NOSELF(IAP_UPDATE_FILE_SBC),														ObjectModelEntryFlags::verbose },
 #endif
 #if HAS_MASS_STORAGE
-	{ "iapFileNameSD",		OBJECT_MODEL_FUNC_NOSELF(IAP_UPDATE_FILE),															ObjectModelEntryFlags::none },
+	{ "iapFileNameSD",		OBJECT_MODEL_FUNC_NOSELF(IAP_UPDATE_FILE),															ObjectModelEntryFlags::verbose },
 #endif
 	{ "maxHeaters",			OBJECT_MODEL_FUNC_NOSELF((int32_t)MaxHeaters),														ObjectModelEntryFlags::verbose },
 	{ "maxMotors",			OBJECT_MODEL_FUNC_NOSELF((int32_t)NumDirectDrivers),												ObjectModelEntryFlags::verbose },
@@ -249,13 +253,16 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 #ifdef DUET_NG
 	{ "name",				OBJECT_MODEL_FUNC(self->GetBoardName()),															ObjectModelEntryFlags::none },
 	{ "shortName",			OBJECT_MODEL_FUNC(self->GetBoardShortName()),														ObjectModelEntryFlags::none },
+#elif TGBTC
+    { "name",               OBJECT_MODEL_FUNC_NOSELF(BOARD_NAME),                                                             ObjectModelEntryFlags::none },
+    { "shortName",          OBJECT_MODEL_FUNC_NOSELF(BOARD_SHORT_NAME),                                                         ObjectModelEntryFlags::none },
 #else
 	{ "name",				OBJECT_MODEL_FUNC_NOSELF(BOARD_NAME),																ObjectModelEntryFlags::none },
 	{ "shortName",			OBJECT_MODEL_FUNC_NOSELF(BOARD_SHORT_NAME),															ObjectModelEntryFlags::none },
 #endif
 	{ "supportsDirectDisplay", OBJECT_MODEL_FUNC_NOSELF(SUPPORT_DIRECT_LCD ? true : false),										ObjectModelEntryFlags::verbose },
 #if MCU_HAS_UNIQUE_ID
-	{ "uniqueId",			OBJECT_MODEL_FUNC_IF(self->uniqueId.IsValid(), self->uniqueId),										ObjectModelEntryFlags::none },
+	{ "uniqueId",			OBJECT_MODEL_FUNC_IF(self->uniqueId.IsValid(), self->uniqueId),										ObjectModelEntryFlags::verbose },
 #endif
 #if HAS_12V_MONITOR
 	{ "v12",				OBJECT_MODEL_FUNC(self, 3),																			ObjectModelEntryFlags::liveNotPanelDue },
@@ -264,7 +271,7 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 	{ "vIn",				OBJECT_MODEL_FUNC(self, 2),																			ObjectModelEntryFlags::liveNotPanelDue },
 #endif
 #if HAS_WIFI_NETWORKING
-	{ "wifiFirmwareFileName", OBJECT_MODEL_FUNC(self->GetDefaultWiFiFirmwareName()),											ObjectModelEntryFlags::none },
+	{ "wifiFirmwareFileName", OBJECT_MODEL_FUNC(self->GetDefaultWiFiFirmwareName()),											ObjectModelEntryFlags::verbose },
 #endif
 #if HAS_CPU_TEMP_SENSOR
 	// 1. boards[0].mcuTemp members
@@ -286,19 +293,12 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 	{ "max",				OBJECT_MODEL_FUNC(self->GetV12Voltages().maximum, 1),												ObjectModelEntryFlags::none },
 	{ "min",				OBJECT_MODEL_FUNC(self->GetV12Voltages().minimum, 1),												ObjectModelEntryFlags::none },
 #endif
-
-#if SUPPORT_ACCELEROMETERS
-	// 4. boards[0].accelerometer members
-	{ "orientation",		OBJECT_MODEL_FUNC_NOSELF((int32_t)Accelerometers::GetLocalAccelerometerOrientation()),				ObjectModelEntryFlags::none },
-	{ "points",				OBJECT_MODEL_FUNC_NOSELF((int32_t)Accelerometers::GetLocalAccelerometerDataPoints()),				ObjectModelEntryFlags::none },
-	{ "runs",				OBJECT_MODEL_FUNC_NOSELF((int32_t)Accelerometers::GetLocalAccelerometerRuns()),						ObjectModelEntryFlags::none },
-#endif
 };
 
 constexpr uint8_t Platform::objectModelTableDescriptor[] =
 {
-	5,																		// number of sections
-	11 + SUPPORT_ACCELEROMETERS + HAS_SBC_INTERFACE + HAS_MASS_STORAGE + HAS_VOLTAGE_MONITOR + HAS_12V_MONITOR + HAS_CPU_TEMP_SENSOR
+	4,																		// number of sections
+	11 + HAS_SBC_INTERFACE + HAS_MASS_STORAGE + HAS_VOLTAGE_MONITOR + HAS_12V_MONITOR + HAS_CPU_TEMP_SENSOR
 	  + SUPPORT_CAN_EXPANSION + (int)SUPPORT_DIRECT_LCD + MCU_HAS_UNIQUE_ID + HAS_WIFI_NETWORKING,		// section 0: boards[0]
 #if HAS_CPU_TEMP_SENSOR
 	3,																		// section 1: mcuTemp
@@ -314,11 +314,6 @@ constexpr uint8_t Platform::objectModelTableDescriptor[] =
 	3,																		// section 3: v12
 #else
 	0,																		// section 3: v12
-#endif
-#if SUPPORT_ACCELEROMETERS
-	3,																		// section 4: boards[0].accelerometer
-#else
-	0,
 #endif
 };
 
@@ -345,10 +340,32 @@ size_t Platform::GetNumGpOutputsToReport() const noexcept
 }
 
 bool Platform::deliberateError = false;						// true if we deliberately caused an exception for testing purposes
-String<StringLength256> Platform::genericDebugBuffer;
+String<StringLength256> *_ecv_null Platform::genericDebugBuffer = nullptr;
 bool Platform::hasGenericDebug = false;
+#if SUPPORT_ASYNC_MOVES
+String<StringLength256> *_ecv_null Platform::moveWarningBuffer = nullptr;
+bool Platform::hasMoveWarning = false;
+#endif
+
+void Platform::EnsureDebugBuffers() noexcept
+{
+	if (genericDebugBuffer == nullptr)
+	{
+		genericDebugBuffer = new String<StringLength256>();
+	}
+#if SUPPORT_ASYNC_MOVES
+	if (moveWarningBuffer == nullptr)
+	{
+		moveWarningBuffer = new String<StringLength256>();
+	}
+#endif
+}
 bool Platform::shouldTurnOffHeaters = false;
+#if TGBTC
+SharedSpiDevice *_ecv_null Platform::SharedSpiDevices[NumSPIDevices];
+#else
 SharedSpiDevice *_ecv_null Platform::mainSharedSpiDevice = nullptr;
+#endif
 
 Platform::Platform() noexcept :
 #if HAS_MASS_STORAGE
@@ -421,7 +438,7 @@ void Platform::Init() noexcept
 
 	// Do any board-specific initialisation that needs to be done early and does not depend on the board revision
 
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS && !TGBTC
 	// Make sure the on-board drivers are disabled
 	SetPinMode(GlobalTmcEnablePin, OUTPUT_HIGH);
 #endif
@@ -453,10 +470,14 @@ void Platform::Init() noexcept
 	}
 	else
 	{
+# if HAS_NETWORKING
 		defaultMacAddress.SetDefault();
+# endif
 	}
 #else
+# if HAS_NETWORKING
 	defaultMacAddress.SetDefault();
+# endif
 #endif
 
 	// Real-time clock
@@ -485,7 +506,7 @@ void Platform::Init() noexcept
 #if defined(DUET3_MB6XD)
 	SetPinMode(ModbusTxPin, OUTPUT_LOW);
 #elif defined(DUET3_MB6HC)
-	if (board == BoardType::Duet3_6HC_v102c)
+	if (board >= BoardType::Duet3_6HC_v102c)
 	{
 		SetPinMode(ModbusTxPin, OUTPUT_LOW);
 	}
@@ -493,9 +514,12 @@ void Platform::Init() noexcept
 
 	// Initialise the IO port subsystem
 	IoPort::Init();
-
+#if TGBTC
+	// We initialise the Shared SPI devices in BoardConfig.cpp
+#else
 	// Shared SPI subsystem
 	mainSharedSpiDevice = new SharedSpiDevice(SharedSpiParams);
+#endif
 
 #if HAS_MASS_STORAGE
 	// File management and SD card interfaces
@@ -507,6 +531,27 @@ void Platform::Init() noexcept
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
 	MassStorage::Init();
+#endif
+
+#if TGBTC
+	// Load HW pin assignments from sdcard, note this also sorts out the pson pin state for LPC/STM boards, so they will
+	// not usually have HAS_DEFAULT_PSON_PIN set
+	BoardConfig::Init();
+#endif
+
+#if TGBTC
+#if HAS_WIFI_NETWORKING
+	SetPinMode(EspResetPin, OUTPUT_LOW);						// reset the WiFi module
+	SetPinMode(EspEnablePin, OUTPUT_LOW);
+#endif
+	// Setup default PS_ON port based on board.txt config
+    if (ATX_POWER_PIN != NoPin)
+    {
+        String<1> dummy;
+        PsOnPort.AssignPort(GetPinNames(ATX_POWER_PIN), dummy.GetRef(), PinUsedBy::gpout, PinAccess::read);
+        PsOnPort.SetInvert(ATX_POWER_INVERTED);
+        PsOnPort.SetMode(ATX_POWER_STATE ? PinAccess::write1 : PinAccess::write0);
+    }
 #endif
 
     // Ethernet networking defaults
@@ -548,6 +593,8 @@ void Platform::Init() noexcept
 		numSmartDrivers = MaxSmartDrivers;
 # elif defined(DUET3)
 		numSmartDrivers = MaxSmartDrivers;
+# elif TGBTC
+		numSmartDrivers = totalSmartDrivers;
 # elif defined(DUET3MINI)
 		numSmartDrivers = MaxSmartDrivers;							// support the expansion board, but don't mind if it's missing
 # endif
@@ -580,7 +627,7 @@ void Platform::Init() noexcept
 
 	// If MISO from a MAX31856 board breaks after initialising the MAX31856 then if MISO floats low and reads as all zeros, this looks like a temperature of 0C and no error.
 	// Enable the pullup resistor, this makes it float high instead.
-#if SAME5x
+#if SAME5x || TGBTC
 	// nothing to do here
 #else
 	SetPinMode(SharedSpiParams.misoPin, INPUT_PULLUP, false);
@@ -596,9 +643,18 @@ void Platform::Init() noexcept
 
 	for (size_t thermistor = 0; thermistor < NumThermistorInputs; thermistor++)
 	{
+#if TGBTC
+		if (TEMP_SENSE_PINS[thermistor] != NoPin)
+		{
+#endif
 		// TODO use ports for these?
 		SetPinMode(TEMP_SENSE_PINS[thermistor], AIN);
 		filteredAdcChannels[thermistor] = PinToAdcChannel(TEMP_SENSE_PINS[thermistor]);	// translate the pin number to the SAM ADC channel number;
+#if TGBTC
+		}
+		else
+			filteredAdcChannels[thermistor] = NO_ADC;
+#endif
 	}
 
 #if HAS_VREF_MONITOR
@@ -616,6 +672,10 @@ void Platform::Init() noexcept
 	tcFilter.Init(0);
 	AnalogIn::EnableTemperatureSensor(1, tcFilter.CallbackFeedIntoFilter, CallbackParameter(&tcFilter), 1, 0);
 	TemperatureCalibrationInit();
+# elif TGBTC
+	filteredAdcChannels[VrefFilterIndex] = LegacyAnalogIn::GetVREFAdcChannel();
+	filteredAdcChannels[CpuTempFilterIndex] = LegacyAnalogIn::GetTemperatureAdcChannel();
+	vRefCorrection = 1*VRefCorrectionScale;
 # else
 	filteredAdcChannels[CpuTempFilterIndex] =
 #if SAM4E || SAM4S || SAME70
@@ -650,6 +710,9 @@ void Platform::Init() noexcept
 	currentVin = 0;
 	highestVin = 0;
 	lowestVin = 9999;
+# if TGBTC
+	dummyVoltageAdcReading = PowerVoltageToAdcReading(VInDummyReading);
+# endif
 	numVinUnderVoltageEvents = 0;
 	previousVinUnderVoltageEvents = 0;
 	numVinOverVoltageEvents = 0;
@@ -672,6 +735,10 @@ void Platform::Init() noexcept
 
 #ifdef DUET_NG
 	DuetExpansion::DueXnTaskInit();								// must initialise interrupt priorities before calling this
+#endif
+#if TGBTC
+	// Give ADC readings time to settle
+	delay(500);
 #endif
 	active = true;
 }
@@ -778,22 +845,9 @@ void Platform::Spin() noexcept
 		return;
 	}
 
-#if SUPPORT_REMOTE_COMMANDS
-	if (CanInterface::InExpansionMode())
-	{
-		// Update status LED
-		if (StepTimer::CheckSynced())
-		{
-			digitalWrite(DiagPin, XNor(DiagOnPolarity, StepTimer::GetMasterTime() & (1u << 19)) != 0);
-		}
-		else
-		{
-			digitalWrite(DiagPin, XNor(DiagOnPolarity, StepTimer::GetTimerTicks() & (1u << 17)) != 0);
-		}
-	}
-#endif
-
 #if SUPPORT_CAN_EXPANSION
+	CanInterface::UpdateStatusLed();
+
 	// Turn off the ACT LED if it is time to do so
 	if (millis() - whenLastCanMessageProcessed > ActLedFlashTime)
 	{
@@ -811,13 +865,22 @@ void Platform::Spin() noexcept
 	// Check for generic debug
 	if (hasGenericDebug)
 	{
-		Message(AddError(MessageType::GenericMessage), genericDebugBuffer.c_str());
+		Message(AddError(MessageType::GenericMessage), (genericDebugBuffer != nullptr) ? genericDebugBuffer->c_str() : "step error occurred but no debug buffer was allocated, use M111 to record details\n");
 		if (shouldTurnOffHeaters)
 		{
 			reprap.GetHeat().SwitchOffAll(true);
 		}
 		hasGenericDebug = false;
 	}
+
+#if SUPPORT_ASYNC_MOVES
+	if (hasMoveWarning && moveWarningBuffer != nullptr)
+	{
+		Message(WarningMessage, moveWarningBuffer->c_str());
+		moveWarningBuffer->Clear();
+		hasMoveWarning = false;
+	}
+#endif
 
 	// Check for M111 debug messages stored in the optional buffer
 	while (!isrDebugBuffer.IsEmpty())
@@ -830,6 +893,21 @@ void Platform::Spin() noexcept
 
 	// Try to flush messages to serial ports
 	(void)FlushMessages();
+
+#if TGBTC
+	// Update the VRef reference correction
+	// See: http://www.efton.sk/STM32/STM32_VREF.pdf and https://www.st.com/resource/en/datasheet/dm00037051.pdf
+	// We get current VRef to compensate reading.
+	// VRef = (3.3*VREFIN_CAL)/VREFINT
+	if (adcFilters[VrefFilterIndex].IsValid())
+	{
+#if STM32
+		vRefCorrection = (GET_ADC_CAL(VREFINT_CAL_ADDR, VREFINT_CAL_DEF)*VRefCorrectionScale)/((adcFilters[VrefFilterIndex].GetSum() >> (AdcBits - 12))/ThermistorAverageReadings);
+#else
+#error "invalid configuration"
+#endif
+	}
+#endif
 
 	// Check the MCU max and min temperatures
 #if HAS_CPU_TEMP_SENSOR
@@ -881,6 +959,13 @@ void Platform::Spin() noexcept
 		}
 # endif
 		else
+#elif HAS_ATX_POWER_MONITOR
+		if (!GetAtxPowerState())
+		{
+			driversPowered = false;
+			reprap.GetGCodes().SetAllAxesNotHomed();
+		}
+		else
 #endif
 
 #if HAS_12V_MONITOR && HAS_SMART_DRIVERS
@@ -919,6 +1004,8 @@ void Platform::Spin() noexcept
 			)
 #elif HAS_12V_MONITOR
 	else if (currentV12 >= driverV12OnAdcReading)
+#elif HAS_ATX_POWER_MONITOR
+	else if (GetAtxPowerState())
 #else
 	else
 #endif
@@ -1158,6 +1245,10 @@ float Platform::GetCpuTemperature() const noexcept
 	return (voltage - 1.44) * (1000.0/4.7) + 27.0 + mcuTemperatureAdjust;			// accuracy at 27C is +/-13C
 # elif SAME70
 	return (voltage - 0.72) * (1000.0/2.33) + 25.0 + mcuTemperatureAdjust;			// accuracy at 25C is +/-34C
+# elif TGBTC && STM32
+	// VSENSE_CORRECTED = VSENSE*VRef/3.3
+	// TMCU = ((TSCAL2_TEMP - TSCAL1_TEMP)/(TSCAL2 - TSCAL1))*(VSENSE_CORRECTED - TSCAL1) + TSCAL1_TEMP
+	return ((110.0f - 30.0f)/(((float)(GET_ADC_CAL(TEMPSENSOR_CAL2_ADDR, TEMPSENSOR_CAL2_DEF))) - ((float)(GET_ADC_CAL(TEMPSENSOR_CAL1_ADDR, TEMPSENSOR_CAL1_DEF))))) * ((voltage*((float)(1u << 12))/3.3f)*vRefCorrection/VRefCorrectionScale - ((float)(GET_ADC_CAL(TEMPSENSOR_CAL1_ADDR, TEMPSENSOR_CAL1_DEF)))) + 30.0f + mcuTemperatureAdjust; 
 # else
 #  error undefined CPU temp conversion
 # endif
@@ -1195,7 +1286,9 @@ void Platform::InitialiseInterrupts() noexcept
 	// WiFi UART interrupt priority is now set in module WiFiInterface
 
 #if SUPPORT_TMC22xx && !SAME5x											// SAME5x uses a DMA interrupt instead of the UART interrupt
-# if TMC22xx_HAS_MUX
+# if TGBTC && STM32
+	NVIC_SetPriority(DMA2_Stream5_IRQn, NvicPriorityDriversSerialTMC); // Software serial
+# elif TMC22xx_HAS_MUX
 	NVIC_SetPriority(TMC22xx_UART_IRQn, NvicPriorityDriversSerialTMC);	// set priority for TMC2660 SPI interrupt
 # else
 	NVIC_SetPriority(TMC22xxUartIRQns[0], NvicPriorityDriversSerialTMC);
@@ -1222,7 +1315,16 @@ void Platform::InitialiseInterrupts() noexcept
 	NVIC_SetPriority(XDMAC_IRQn, NvicPriorityDMA);
 #endif
 
-#if SAME5x
+#if TGBTC && STM32
+    NVIC_SetPriority(EXTI0_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI1_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI2_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI3_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI4_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI9_5_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(EXTI15_10_IRQn, NvicPriorityPins);
+    NVIC_SetPriority(TIM7_IRQn, NvicPriorityTimerPWM);  	//Timer 7 runs Software PWM
+#elif SAME5x
 	SetInterruptPriority(EIC_0_IRQn, 16, NvicPriorityPins);				// SAME5x EXINT has 16 contiguous IRQ numbers
 #else
 	NVIC_SetPriority(PIOA_IRQn, NvicPriorityPins);
@@ -1244,6 +1346,10 @@ void Platform::InitialiseInterrupts() noexcept
 	NVIC_SetPriority(UDP_IRQn, NvicPriorityUSB);
 #elif SAM3XA
 	NVIC_SetPriority(UOTGHS_IRQn, NvicPriorityUSB);
+#elif TGBTC && (STM32F4 || STM32H743xx)
+	NVIC_SetPriority(OTG_FS_IRQn, NvicPriorityUSB);
+#elif TGBTC && STM32H723xx
+	NVIC_SetPriority(OTG_HS_IRQn, NvicPriorityUSB);
 #else
 # error Unsupported processor
 #endif
@@ -1259,6 +1365,11 @@ void Platform::InitialiseInterrupts() noexcept
 # elif SAME70
 	NVIC_SetPriority(MCAN0_INT0_IRQn, NvicPriorityCan);		// we don't use INT1
 	NVIC_SetPriority(MCAN1_INT0_IRQn, NvicPriorityCan);		// we don't use INT1
+# elif TGBTC && STM32H7
+	NVIC_SetPriority(FDCAN1_IT0_IRQn, NvicPriorityCan);
+	NVIC_SetPriority(FDCAN1_IT1_IRQn, NvicPriorityCan);
+	NVIC_SetPriority(FDCAN2_IT0_IRQn, NvicPriorityCan);
+	NVIC_SetPriority(FDCAN2_IT1_IRQn, NvicPriorityCan);
 # endif
 #endif
 
@@ -1291,6 +1402,9 @@ void Platform::InitialiseInterrupts() noexcept
 	if (resetReason & RSTC_RCAUSE_SYST)		{ return "software"; }
 	if (resetReason & RSTC_RCAUSE_BACKUP)	{ return "backup/hibernate"; }
 	return "unknown";
+#elif STM32
+	const char *_ecv_array resetReasons[] = {"unknown", "low power", "window watchdog", "ind. watchdog", "software", "power on/off", "pin", "brownout"};
+	return resetReasons[GetResetCause()];
 #else
 	constexpr const char *_ecv_array resetReasons[8] = { "power up", "backup", "watchdog", "software",
 # ifdef DUET_NG
@@ -1392,6 +1506,7 @@ void Platform::Diagnostics(unsigned int part, const StringRef& reply) noexcept
 					(HasDriverPower()) ? "yes" : "no");
 #endif
 
+
 #if HAS_12V_MONITOR
 		// Show the 12V rail voltage
 		reply.lcatf("12V rail voltage: min %.1f, current %.1f, max %.1f, under voltage events: %" PRIu32,
@@ -1446,9 +1561,19 @@ void Platform::Diagnostics(unsigned int part, const StringRef& reply) noexcept
 
 #ifdef I2C_IFACE
 		{
+# if SAM4S || SAM4E
 			const TwoWire::ErrorCounts errs = I2C_IFACE.GetErrorCounts(true);
-			reply.lcatf("I2C nak errors %" PRIu32 ", send timeouts %" PRIu32 ", receive timeouts %" PRIu32 ", finishTimeouts %" PRIu32 ", resets %" PRIu32,
-				errs.naks, errs.sendTimeouts, errs.recvTimeouts, errs.finishTimeouts, errs.resets);
+			reply.lcatf("I2C nak errors %" PRIu32 ", send timeouts %" PRIu32 ", receive timeouts %" PRIu32 ", finishTimeouts %" PRIu32 ", resets %" PRIu32 ", bus recoveries %" PRIu32,
+				errs.naks, errs.sendTimeouts, errs.recvTimeouts, errs.finishTimeouts, errs.resets, errs.recoveries);
+# else
+			if (I2C::sharedI2C != nullptr)
+			{
+				I2cErrors errs;
+				I2C::sharedI2C->GetAndClearErrors(errs);
+				reply.lcatf("I2C bus errors %u, naks %u, contentions %u, other errors %u, bus recoveries %u",
+					errs.busErrors, errs.naks, errs.contentions, errs.otherErrors, errs.recoveries);
+			}
+# endif
 		}
 #endif
 		break;
@@ -1654,7 +1779,7 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 		break;
 
 	case (unsigned int)DiagnosticTestType::SetWriteBuffer:
-#if SAME70
+#if SAME70 || STM32H7
 		//TODO set cache to write-back instead
 		reply.copy("Write buffer not supported on this processor");
 		return GCodeResult::error;
@@ -1678,6 +1803,7 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 #endif
 
 	case (unsigned int)DiagnosticTestType::TestWatchdog:
+
 		if (!gb.DoDwellTime(1000))								// wait a second to allow the response to be sent back to the web server, otherwise it may retry
 		{
 			return GCodeResult::notFinished;
@@ -1701,7 +1827,8 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 			return GCodeResult::notFinished;
 		}
 		deliberateError = true;
-		debugPrintf("Diagnostic Test\n");
+		for(int i = 0; i < 1000; i++)
+		debugPrintf("Diagnostic Test1234567890123456789012345678901234567890123456789012345678901234567890\n");
 		break;
 
 	case (unsigned int)DiagnosticTestType::DivideByZero:		// do an integer divide by zero to test exception handling
@@ -1845,7 +1972,7 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 									(double)((float)(tim3 * (1'000'000/iterations))/SystemCoreClock), (ok3) ? "ok" : "ERROR");
 			}
 
-#if SUPPORT_S_CURVE
+#if SUPPORT_3RD_ORDER
 			// Time and check floating point cube root
 			{
 				unsigned int numBad = 0, numBetter = 0, numWorse = 0, numEqual = 0, numSameError = 0;
@@ -1948,7 +2075,7 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 		}
 		break;
 
-#if SUPPORT_S_CURVE
+#if SUPPORT_3RD_ORDER
 	case (unsigned int)DiagnosticTestType::TimeCubicSolver:		// Show the cubic solver calculation time. Caution: may disable interrupt for several tens of microseconds.
 		{
 			constexpr uint32_t iterations = 100;				// use a value that divides into one million
@@ -2156,17 +2283,27 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 			uint32_t startClocks, endClocks;
 			uint16_t startTimeStamp, endTimeStamp;
 			{
+# if USE_SPICAN
+				CanInterface::GetTimeStampCounters(startTimeStamp, startClocks);
+# else
 				AtomicCriticalSectionLocker lock;
 				startClocks = StepTimer::GetTimerTicksWhenInterruptsDisabled();
 				startTimeStamp = CanInterface::GetTimeStampCounter();
+				startClocks = StepTimer::GetTimerTicks();
+# endif
 			}
 			delay(2);
 			{
+# if USE_SPICAN
+				CanInterface::GetTimeStampCounters(endTimeStamp, endClocks);
+#else
 				AtomicCriticalSectionLocker lock;
 				endClocks = StepTimer::GetTimerTicksWhenInterruptsDisabled();
 				endTimeStamp = CanInterface::GetTimeStampCounter();
+				endClocks = StepTimer::GetTimerTicks();
+# endif
 			}
-# if SAME70
+# if EXTERNAL_CAN_TIMESTAMP_COUNTER
 			const uint32_t tsDiff = (endTimeStamp - startTimeStamp) & 0xFFFF;
 # else
 			const uint32_t tsDiff = (((endTimeStamp - startTimeStamp) & 0xFFFF) * CanInterface::GetTimeStampPeriod()) >> 6;
@@ -2185,6 +2322,10 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 #ifdef DUET_NG
 	case (unsigned int)DiagnosticTestType::PrintExpanderStatus:
 		reply.printf("Expander status %04X\n", DuetExpansion::DiagnosticRead());
+		break;
+
+	case (unsigned int)DiagnosticTestType::WedgeI2CBus:
+		DuetExpansion::WedgeI2CBus(reply);
 		break;
 #endif
 
@@ -2358,11 +2499,11 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 				}
 			}
 #  if defined(DUET3_MB6XD) || defined(DUET3_MB6HC)
-			else if (chan == FirstAuxChannel + 1 &&
+			else if (chan == FirstAuxChannel + 1
 #   if defined(DUET3_MB6XD)
-						board >= BoardType::Duet3_6XD_v102
+						&& board >= BoardType::Duet3_6XD_v102
 #   elif defined(DUET3_MB6HC)
-						board >= BoardType::Duet3_6HC_v102c
+						&& board >= BoardType::Duet3_6HC_v102c
 #   endif
 					)
 			{
@@ -2372,6 +2513,14 @@ GCodeResult Platform::HandleM575(GCodeBuffer& gb, const StringRef& reply) THROWS
 				}
 			}
 #  endif
+			// Serial parity for device/Modbus mode. Always applied so that omitting F restores
+			// the pre-existing behaviour (no parity, 8N1) rather than keeping a previous setting.
+			switch (gb.Seen('F') ? gb.GetLimitedUIValue('F', 3) : 0)
+			{
+			case 1:		dev.SetSerialMode(UartMode::Mode8E1); break;
+			case 2:		dev.SetSerialMode(UartMode::Mode8O1); break;
+			default:	dev.SetSerialMode(UartMode::Mode8N1); break;
+			}
 # endif
 		}
 
@@ -2641,7 +2790,7 @@ GCodeResult Platform::SendI2cOrModbus(GCodeBuffer& gb, const StringRef &reply) T
 	size_t auxChannel = 0;
 	if (gb.GetCommandFraction() > 0)
 	{
-		auxChannel = gb.GetLimitedUIValue('P', 1, NumSerialChannels) - FirstAuxChannel;
+		auxChannel = gb.GetLimitedUIValue('P', FirstAuxChannel, NumSerialChannels) - FirstAuxChannel;
 		if (auxDevices[auxChannel].GetMode() != AuxMode::device)
 		{
 			reply.copy("Port has not been set to device mode");
@@ -2672,7 +2821,10 @@ GCodeResult Platform::SendI2cOrModbus(GCodeBuffer& gb, const StringRef &reply) T
 				bValues[i] = (uint8_t)valuesToSend[i];
 			}
 
-			I2C::Init();
+			if (!I2C::Init(reply))
+			{
+				return GCodeResult::error;
+			}
 			const size_t bytesTransferred = I2C::Transfer(address, bValues, numToSend, numToReceive);
 
 			if (bytesTransferred < numToSend)
@@ -2984,7 +3136,10 @@ GCodeResult Platform::ReceiveI2cOrModbus(GCodeBuffer& gb, const StringRef &reply
 	case -1:
 		{
 			const uint32_t address = gb.GetLimitedUIValue('A', 1u << 10);
-			I2C::Init();
+			if (!I2C::Init(reply))
+			{
+				return GCodeResult::error;
+			}
 			uint8_t bValues[MaxI2cOrModbusValues];
 			const size_t bytesRead = I2C::Transfer(address, bValues, 0, numValues);
 
@@ -3471,6 +3626,8 @@ void Platform::DebugMessage(const char *_ecv_array fmt, va_list vargs) noexcept
 								usbDev->write(c);
 								return true;
 							}
+							else
+								delay(1);
 						}
 					}
 					return false;
@@ -3588,12 +3745,21 @@ void Platform::StopBeep() noexcept
 
 bool Platform::GetAtxPowerState() const noexcept
 {
+#if TGBTC
+	return ATX_POWER_STATE;
+#else
 	const bool val = PsOnPort.ReadDigital();
 	return (PsOnPort.IsHardwareInverted()) ? !val : val;
+#endif
 }
+
 
 GCodeResult Platform::HandleM80(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException)
 {
+#if TGBTC
+	ATX_POWER_STATE = true;
+	IoPort::WriteDigital(StepperPowerEnablePin, true);
+#endif
 	powerDownWhenFansStop = delayedPowerDown = false;				// cancel any pending power down
 
 	GCodeResult rslt;
@@ -3608,8 +3774,13 @@ GCodeResult Platform::HandleM80(GCodeBuffer& gb, const StringRef& reply) THROWS(
 	}
 	else
 	{
+// on TG port we allow use of M80/M81 to control "virtual power", so it is not an error to have no pin defined
+#if TGBTC
+		rslt = GCodeResult::ok;
+#else
 		reply.copy("No PS_ON port defined");
 		rslt = GCodeResult::error;
+#endif
 	}
 
 	reprap.StateUpdated();
@@ -3623,7 +3794,12 @@ GCodeResult Platform::HandleM81(GCodeBuffer& gb, const StringRef& reply) THROWS(
 	{
 		rslt = GetGCodeResultFromSuccess(PsOnPort.AssignPort(gb, reply, PinUsedBy::gpout, PinAccess::write0));
 	}
+// on TG port we allow use of M80/M81 to control "virtual power", so it is not an error to have no pin defined
+#if TGBTC
+	else if (1)
+#else
 	else if (PsOnPort.IsValid())
+#endif
 	{
 		// This is a power-down command
 		powerDownWhenFansStop = gb.Seen('S') && gb.GetUIValue() != 0;
@@ -3657,6 +3833,10 @@ void Platform::AtxPowerOff() noexcept
 		// We don't call logger->Stop() here because we don't know whether turning off the power will work
 	}
 #endif
+#if TGBTC
+	ATX_POWER_STATE = false;
+	IoPort::WriteDigital(StepperPowerEnablePin, false);
+#endif
 
 	// The PS_ON pin on Duet 3 is shared with another pin, so only try to turn off ATX power if we know that power is being controlled
 	if (IsAtxPowerControlled())
@@ -3664,6 +3844,10 @@ void Platform::AtxPowerOff() noexcept
 		PsOnPort.WriteDigital(false);
 		reprap.StateUpdated();
 	}
+#if TGBTC
+	else
+		reprap.StateUpdated();
+#endif
 }
 
 void Platform::SetBaudRate(size_t chan, uint32_t br) noexcept
@@ -3708,30 +3892,38 @@ void Platform::ResetChannel(size_t chan) noexcept
 	}
 #endif
 }
-
 #if defined(DUET3_MB6HC)
 
 // This is safe to call before Platform has been created
 /*static*/ BoardType Platform::GetMB6HCBoardType() noexcept
 {
-	// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but not on v1.01 or v1.02 boards
-	// Driver 1 has a pulldown resistor on v0.1 and v1.0 boards, however we don't support v0.1 and we don't care about the difference between v0.6 and v1.0, so we don't need to read it
-	// Driver 2 has a pulldown resistor on v1.10, v1.02, 1.02a, 1.02b, 1.02c
-	// Driver 3 has a pulldown resistor on v1.02c
-	SetPinMode(DIRECTION_PINS[2], INPUT_PULLUP, false);
-	SetPinMode(DIRECTION_PINS[0], INPUT_PULLUP, false);
-	delayMicroseconds(20);									// give the pullup resistor time to work
-	if (digitalRead(DIRECTION_PINS[2]))
+	const uint32_t deviceId = CHIPID->CHIPID_CIDR;
+	constexpr uint32_t ArchAndSramMask = 0x0fff0000;
+	if ((deviceId & ArchAndSramMask) == 0x01AF0000)
 	{
-		return (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
-	}
-	else if (digitalRead(DIRECTION_PINS[0]))
-	{
-		return BoardType::Duet3_6HC_v102;
+		return BoardType::Duet3_6HC_v150;					// it's a PIC32CA2051CA70
 	}
 	else
 	{
-		return (digitalRead(DIRECTION_PINS[3])) ? BoardType::Duet3_6HC_v102b : BoardType::Duet3_6HC_v102c;
+		// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but not on v1.01 or v1.02 boards
+		// Driver 1 has a pulldown resistor on v0.1 and v1.0 boards, however we don't support v0.1 and we don't care about the difference between v0.6 and v1.0, so we don't need to read it
+		// Driver 2 has a pulldown resistor on v1.10, v1.02, 1.02a, 1.02b, 1.02c
+		// Driver 3 has a pulldown resistor on v1.02c
+		SetPinMode(DIRECTION_PINS[2], INPUT_PULLUP, false);
+		SetPinMode(DIRECTION_PINS[0], INPUT_PULLUP, false);
+		delayMicroseconds(20);									// give the pullup resistor time to work
+		if (digitalRead(DIRECTION_PINS[2]))
+		{
+			return (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
+		}
+		else if (digitalRead(DIRECTION_PINS[0]))
+		{
+			return BoardType::Duet3_6HC_v102;
+		}
+		else
+		{
+			return (digitalRead(DIRECTION_PINS[3])) ? BoardType::Duet3_6HC_v102b : BoardType::Duet3_6HC_v102c;
+		}
 	}
 }
 
@@ -3825,6 +4017,8 @@ void Platform::SetBoardType() noexcept
 	board = BoardType::DuetM_10;
 #elif defined(PCCB_10)
 	board = BoardType::PCCB_v10;
+#elif defined(TGBTC)
+	board = BoardType::TeamGloomy_BTC;
 #elif defined INDX
 	board = BoardType::Indx;
 #else
@@ -3841,13 +4035,14 @@ const char *_ecv_array Platform::GetElectronicsString() const noexcept
 	case BoardType::Duet3Mini_Unknown:		return "Duet 3 " BOARD_SHORT_NAME " unknown variant";
 	case BoardType::Duet3Mini_WiFi:			return "Duet 3 " BOARD_SHORT_NAME " WiFi 1.02 or earlier";
 	case BoardType::Duet3Mini_Ethernet:		return "Duet 3 " BOARD_SHORT_NAME " Ethernet";
-	case BoardType::Duet3Mini_WiFi_ESP32:	return "Duet 3 " BOARD_SHORT_NAME " WiFi 1.03 or later";
+	case BoardType::Duet3Mini_WiFi_ESP32:	return "Duet 3 " BOARD_SHORT_NAME " WiFi 1.04 or later";
 #elif defined(DUET3_MB6HC)
 	case BoardType::Duet3_6HC_v06_100:		return "Duet 3 " BOARD_SHORT_NAME " v1.0 or earlier";
 	case BoardType::Duet3_6HC_v101:			return "Duet 3 " BOARD_SHORT_NAME " v1.01";
 	case BoardType::Duet3_6HC_v102:			return "Duet 3 " BOARD_SHORT_NAME " v1.02 or 1.02a";
 	case BoardType::Duet3_6HC_v102b:		return "Duet 3 " BOARD_SHORT_NAME " v1.02b";
 	case BoardType::Duet3_6HC_v102c:		return "Duet 3 " BOARD_SHORT_NAME " v1.02c or later";
+	case BoardType::Duet3_6HC_v150:			return "Duet 3 " BOARD_SHORT_NAME " v1.50 or later";
 #elif defined(DUET3_MB6XD)
 	case BoardType::Duet3_6XD_v01:			return "Duet 3 " BOARD_SHORT_NAME " v0.1";
 	case BoardType::Duet3_6XD_v100:			return "Duet 3 " BOARD_SHORT_NAME " v1.0";
@@ -3867,6 +4062,8 @@ const char *_ecv_array Platform::GetElectronicsString() const noexcept
 	case BoardType::DuetM_10:				return "Duet Maestro 1.0";
 #elif defined(PCCB_10)
 	case BoardType::PCCB_v10:				return "PC001373";
+#elif defined(TGBTC)
+	case BoardType::TeamGloomy_BTC:				return TGBTC_ELECTRONICS_STRING;
 #elif defined(INDX)
 	case BoardType::Indx:					return "INDX";
 #else
@@ -3891,6 +4088,8 @@ const char *_ecv_array Platform::GetBoardString() const noexcept
 	case BoardType::Duet3_6HC_v101:			return "duet3mb6hc101";
 	case BoardType::Duet3_6HC_v102:			return "duet3mb6hc102";
 	case BoardType::Duet3_6HC_v102b:		return "duet3mb6hc102b";
+	case BoardType::Duet3_6HC_v102c:		return "duet3mb6hc102c";
+	case BoardType::Duet3_6HC_v150:			return "duet3mb6hc150";
 #elif defined(DUET3_MB6XD)
 	case BoardType::Duet3_6XD_v01:			return "duet3mb6xd001";
 	case BoardType::Duet3_6XD_v100:			return "duet3mb6xd100";
@@ -3909,6 +4108,8 @@ const char *_ecv_array Platform::GetBoardString() const noexcept
 	case BoardType::DuetM_10:				return "duetmaestro100";
 #elif defined(PCCB_10)
 	case BoardType::PCCB_v10:				return "pc001373";
+#elif defined(TGBTC)
+	case BoardType::TeamGloomy_BTC:					return TGBTC_BOARD_STRING;
 #elif defined(INDX)
 	case BoardType::Indx:					return "indx";
 #else
@@ -4347,15 +4548,6 @@ void Platform::SetDiagLed(bool on) const noexcept
 	digitalWrite(DiagPin, XNor(DiagOnPolarity, on));
 }
 
-#if SUPPORT_MULTICAST_DISCOVERY
-
-void Platform::InvertDiagLed() const noexcept
-{
-	digitalWrite(DiagPin, !digitalRead(DiagPin));
-}
-
-#endif
-
 #if HAS_CPU_TEMP_SENSOR && SAME5x
 
 void Platform::TemperatureCalibrationInit() noexcept
@@ -4462,7 +4654,29 @@ void Platform::Tick() noexcept
 	{
 # if HAS_VOLTAGE_MONITOR
 		// Read the power input voltage
+#  if TGBTC
+		if (PowerMonitorVinDetectPin != NoPin)
+		{
+			// we can read the Vin value
+			currentVin = AnalogInReadChannel(vInMonitorAdcChannel)*vRefCorrection/VRefCorrectionScale;
+#   if HAS_ATX_POWER_MONITOR
+			// Allow voltage to be turned "off" by "virtual ATX control"
+			if (!ATX_POWER_STATE)
+				currentVin = 0;
+#   endif
+		}
+		else
+		{
+#   if HAS_ATX_POWER_MONITOR
+			if (!ATX_POWER_STATE)
+				currentVin = 0;
+			else
+#   endif
+				currentVin = dummyVoltageAdcReading;
+		}
+#  else
 		currentVin = AnalogInReadChannel(vInMonitorAdcChannel);
+#  endif
 		if (currentVin > highestVin)
 		{
 			highestVin = currentVin;
@@ -4549,11 +4763,17 @@ void Platform::Tick() noexcept
 	case 3:
 		{
 #if !SAME70
+#if TGBTC
+			if(filteredAdcChannels[currentFilterNumber] != NO_ADC)
+			{
+#endif
 			// We read a filtered ADC channel on alternate ticks
 			// Because we are in the tick ISR and no other ISR reads the averaging filter, we can cast away 'volatile' here.
 			ThermistorAveragingFilter& currentFilter = const_cast<ThermistorAveragingFilter&>(adcFilters[currentFilterNumber]);		// cast away 'volatile'
 			currentFilter.ProcessReading(AnalogInReadChannel(filteredAdcChannels[currentFilterNumber]));
-
+#if TGBTC
+			}
+#endif
 			++currentFilterNumber;
 			if (currentFilterNumber == NumAdcFilters)
 			{

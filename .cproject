@@ -2300,6 +2300,7 @@
 				</externalSettings>
 			</storageModule>
 		</cconfiguration>
+<<<<<<< HEAD
 		<cconfiguration id="cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.170574622.649587786.957471317.1222249630.1359583846.12006785">
 			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="cdt.managedbuild.config.gnu.cross.exe.release.516195201.976458850.241502451.170574622.649587786.957471317.1222249630.1359583846.12006785" moduleId="org.eclipse.cdt.core.settings" name="INDX">
 				<macros>
@@ -2492,6 +2493,8 @@
 				</externalSettings>
 			</storageModule>
 		</cconfiguration>
+=======
+>>>>>>> teamgloomy/v3.7-dev
 	</storageModule>
 	<storageModule moduleId="cdtBuildSystem" version="4.0.0">
 		<project id="RepRapFirmware.cdt.managedbuild.target.gnu.cross.exe.1494358155" name="Executable" projectType="cdt.managedbuild.target.gnu.cross.exe"/>

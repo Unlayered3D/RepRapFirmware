@@ -2,6 +2,13 @@
 
 #include "CRC32.h"
 
+#if TGBTC
+# include <RTOSIface/RTOSIface.h>
+# include "HardwareCRC32.h"
+extern HardwareCRC32 HWCRC32;
+
+#endif
+
 #if USE_SAME5x_HARDWARE_CRC
 
 # include <RTOSIface/RTOSIface.h>
@@ -194,6 +201,11 @@ void CRC32::Update(char c) noexcept
 // Slicing-by-4 using 1 quadword per loop iteration: 28 instructions, 31 clocks (3.875 clocks/byte)
 void CRC32::Update(const char *_ecv_array s, size_t len) noexcept
 {
+#if TGBTC
+	TaskCriticalSectionLocker lock;			// we need exclusive use of the CRC unit
+	crc = ~HWCRC32.CalcCRC32(reinterpret_cast<const uint8_t*>(s), len, ~crc);
+#else
+
 	// The speed of this function affects the speed of file uploads, so make it as fast as possible. Sadly the SAME70 doesn't do hardware CRC calculation.
 	const char *_ecv_array const end = s + len;
 
@@ -298,6 +310,7 @@ void CRC32::Update(const char *_ecv_array s, size_t len) noexcept
 
 		crc = locCrc;
 	}
+#endif
 }
 
 #if USE_SAME5x_HARDWARE_CRC

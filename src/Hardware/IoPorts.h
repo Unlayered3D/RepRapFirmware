@@ -105,7 +105,7 @@ protected:
 	Pin GetPinNoCheck() const noexcept
 	{
 		// New-style pin table is indexed by pin number
-		return logicalPin;
+		return (Pin)logicalPin;
 	}
 
 	static const char*_ecv_array TranslatePinAccess(PinAccess access) noexcept;

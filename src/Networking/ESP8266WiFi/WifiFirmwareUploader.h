@@ -22,7 +22,9 @@ public:
 	bool IsReady() const noexcept;
 	void SendUpdateFile(const char *_ecv_array file, uint32_t address) noexcept;
 	void Spin() noexcept;
-
+#if TGBTC
+	void DetectWiFiModuleType() noexcept;
+#endif
 	// Offsets in flash memory
 	static const uint32_t FirmwareAddress = 0x00000000;
 
@@ -124,7 +126,7 @@ private:
 	EspUploadResult uploadResult;
 	int restartModeOnCompletion;
 	ESPType espType;
-#if STM32
+#if TGBTC && STM32
 	uint32_t *blkBuf32;
 #endif
 };

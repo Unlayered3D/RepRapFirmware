@@ -42,7 +42,6 @@
 #include <errno.h>
 #endif
 #include <malloc.h>
-
 #if 1	// DC
 
 # define DEFINE_MALLOC
@@ -243,6 +242,7 @@ static inline chunk * get_chunk_from_ptr(void * ptr)
     if (c->size < 0) c = (chunk *)((char *)c + c->size);
     return c;
 }
+
 
 #ifdef DEFINE_MALLOC
 /* List list header of free blocks */
@@ -596,6 +596,7 @@ void * nano_calloc(RARG malloc_size_t n, malloc_size_t elem)
 #endif /* DEFINE_CALLOC */
 
 #ifdef DEFINE_REALLOC
+
 /* Function nano_realloc
  * Implement realloc by malloc + memcpy */
 void * nano_realloc(RARG void * ptr, malloc_size_t size)

@@ -24,11 +24,9 @@ enum class Arm : uint8_t
 class FiveBarScaraKinematics : public ZLeadscrewKinematics
 {
 public:
-	// Constructors
-	FiveBarScaraKinematics() noexcept;
+	static Kinematics *_ecv_from _ecv_null Create(const char *_ecv_array _ecv_null name, int legacyNumber) noexcept;
 
 	// Overridden base class functions. See Kinematics.h for descriptions.
-	const char *GetName(bool forStatusReport) const noexcept override;
 	bool Configure(unsigned int mCode, GCodeBuffer& gb, const StringRef& reply, bool& error) THROWS(GCodeException) override;
 	MovementError CartesianToMotorSteps(const float machinePos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, int32_t motorPos[], bool isCoordinated) const noexcept override;
 	void MotorStepsToCartesian(const int32_t motorPos[], const float stepsPerMm[], size_t numVisibleAxes, size_t numTotalAxes, float machinePos[]) const noexcept override;
@@ -47,7 +45,11 @@ protected:
 	DECLARE_OBJECT_MODEL
 
 private:
+	static KinematicsTypeDescriptor fiveBarScaraKinematicsDescriptor;
+
 	static constexpr const char *Home5BarScaraFileName = "home5barscara.g";
+
+	FiveBarScaraKinematics() noexcept;
 
 	void Recalc() noexcept;
 	int getQuadrant(float x, float y) const noexcept;
@@ -64,33 +66,33 @@ private:
 	bool constraintsOk(const float coords[]) const noexcept;
 
 	// Primary parameters
-	float xOrigL;
-	float yOrigL;
-	float xOrigR;
-	float yOrigR;
-	float proximalL;
-	float proximalR;
-	float distalL;
-	float distalR;
-	float cantL;
-	float cantR;
-	int workmode;
-	float homingAngleL;
-	float homingAngleR;
+	float xOrigL = 0.0;
+	float yOrigL = 0.0;
+	float xOrigR = 0.0;
+	float yOrigR = 0.0;
+	float proximalL = 0.0;
+	float proximalR = 0.0;
+	float distalL = 0.0;
+	float distalR = 0.0;
+	float cantL = 0.0;
+	float cantR = 0.0;
+	int workmode = 1;
+	float homingAngleL = 0.0;
+	float homingAngleR = 0.0;
 
-	bool printAreaDefined;
-	float printArea[4];	// x1, y1, x2, y2
+	bool printAreaDefined = false;
+	float printArea[4] = { 0.0, 0.0, 0.0, 0.0 };	// x1, y1, x2, y2
 
-	float headAngleMin;
-	float headAngleMax;
-	float proxDistLAngleMin;
-	float proxDistLAngleMax;
-	float proxDistRAngleMin;
-	float proxDistRAngleMax;
-	float actuatorAngleLMin;
-	float actuatorAngleLMax;
-	float actuatorAngleRMin;
-	float actuatorAngleRMax;
+	float headAngleMin = 0.0;
+	float headAngleMax = 0.0;
+	float proxDistLAngleMin = 0.0;
+	float proxDistLAngleMax = 0.0;
+	float proxDistRAngleMin = 0.0;
+	float proxDistRAngleMax = 0.0;
+	float actuatorAngleLMin = 0.0;
+	float actuatorAngleLMax = 0.0;
+	float actuatorAngleRMin = 0.0;
+	float actuatorAngleRMax = 0.0;
 
 	// Derived parameters
 

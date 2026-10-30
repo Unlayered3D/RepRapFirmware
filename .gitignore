@@ -3,7 +3,7 @@
 *.d
 
 # Misc
-/.settings/language.settings.xml
+/.settings/
 
 # Emacs backup and auto-save files
 *~
@@ -56,3 +56,5 @@ compile_commands.json
 
 # python3 shim used by the UF2 build step where only python.exe is on PATH
 /Tools/CrcAppender/win-x86-64/python3
+/Duet3_MB6HC_v2/
+/Duet_MB6HC_v2/

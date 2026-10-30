@@ -107,6 +107,13 @@ public:
 #if SUPPORT_REMOTE_COMMANDS
  	void ScheduleReset() noexcept { whenDeferredCommandScheduled = millis(); deferredCommand = DeferredCommand::reboot; }
  	void ScheduleFirmwareUpdateOverCan() noexcept { whenDeferredCommandScheduled = millis(); deferredCommand = DeferredCommand::updateFirmware; }
+#if TGBTC
+	bool CheckFirmwareUpdatePossible() noexcept;
+	void ScheduleChangeCanExpansionAddress(CanAddress addr) noexcept { CanExpansionAddress = addr; whenDeferredCommandScheduled = millis(); deferredCommand = DeferredCommand::setAddress; }
+#if STM32H7
+ 	void ScheduleBootloaderUpdateOverCan() noexcept { whenDeferredCommandScheduled = millis(); deferredCommand = DeferredCommand::updateBootloader; }
+#endif
+#endif
 	GCodeResult ProcessRemoteM111(const CanMessageGeneric& msg, const StringRef& reply) noexcept;
 #endif
 
@@ -140,6 +147,13 @@ public:
 	void UpdateFirmware(c_string iapFilename, c_string iapParam) noexcept;
 #endif
 	void PrepareToLoadIap() noexcept;
+#if TGBTC
+	void RunSdIap(c_string _ecv_null  filename) noexcept;
+	void RunCanIap(c_string _ecv_null  filename) noexcept;
+#if STM32H7
+	void RunCanBootloaderIap(c_string _ecv_null  filename) noexcept;
+#endif
+#endif
 	[[noreturn]] void StartIap(c_string _ecv_null filename) noexcept;
 
 	void ReportInternalError(c_string file, c_string func, int line) const noexcept;	// report an internal error
@@ -265,7 +279,11 @@ private:
 #endif
 
 #if SUPPORT_REMOTE_COMMANDS
+#if TGBTC
+	enum class DeferredCommand : uint8_t { none, reboot, updateFirmware, updateBootloader, setAddress };
+#else
 	enum class DeferredCommand : uint8_t { none, reboot, updateFirmware };
+#endif
 	volatile uint32_t whenDeferredCommandScheduled;
 	volatile DeferredCommand deferredCommand;
 #endif

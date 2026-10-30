@@ -39,6 +39,10 @@
 # define USE_DMAC_MANAGER	1		// use SAME5x DmacManager module
 constexpr IRQn SBC_SPI_IRQn = SbcSpiSercomIRQn;
 
+#elif TGBTC
+# define USE_DMAC			0
+# define USE_XDMAC			0
+uint32_t HeaderCRCErrors, DataCRCErrors;
 #else
 # error Unknown board
 #endif
@@ -87,6 +91,8 @@ extern void ESP_SPI_HANDLER() noexcept;
 #include <General/IP4String.h>
 
 static TaskHandle sbcTaskHandle = nullptr;
+
+#if !TGBTC
 
 #if USE_DMAC
 
@@ -407,15 +413,25 @@ extern "C" void SBC_SPI_HANDLER() noexcept
 #endif
 }
 
+#else
+#if TGBTC
+# include "TGBTC/Sbc/DataTransfer.hpp"
+#endif
+#endif
 /*-----------------------------------------------------------------------------------*/
 
 // Static data. Note, the startup code we use doesn't make any provision for initialising non-cached memory, other than to zero. So don't specify initial value here
 
-#if SAME70
+#if SAME70 || (TGBTC && STM32H7)
+// On the STM32H7 and SAME70 we need to ensure that the following are in memory that is not cached (see above). 
 __nocache SpiTransferHeader DataTransfer::rxHeader;
 __nocache SpiTransferHeader DataTransfer::txHeader;
 __nocache uint32_t DataTransfer::rxResponse;
 __nocache uint32_t DataTransfer::txResponse;
+#if TGBTC && STM32H7
+alignas(4) __nocache char DataTransfer::rxBuffer[SbcTransferBufferSize];
+alignas(4) __nocache char DataTransfer::txBuffer[SbcTransferBufferSize];
+#endif
 # if SUPPORTS_SBC_OVER_USB
 __nocache UsbTransferHeader DataTransfer::usbRxHeader;
 __nocache UsbTransferHeader DataTransfer::usbTxHeader;
@@ -443,14 +459,28 @@ DataTransfer::DataTransfer() noexcept : state(InternalTransferState::ExchangingD
 	txHeader.protocolVersion = SbcProtocolVersion;
 	txHeader.numPackets = 0;
 	txHeader.sequenceNumber = 0;
+#if (TGBTC && STM32F4)
+	// We need to allocate memory early to ensure it is below the last 32Mb of RAM
+	rxBuffer = (char *)new uint32_t[(SbcTransferBufferSize + 3)/4];
+	txBuffer = (char *)new uint32_t[(SbcTransferBufferSize + 3)/4];
+#endif
 }
+
+#if TGBTC
+void DataTransfer::FreeMemory() noexcept
+{
+#if (TGBTC && STM32F4)
+	delete rxBuffer;
+	delete txBuffer;
+#endif
+}
+#endif
 
 void DataTransfer::Init() noexcept
 {
 	// Initialise transfer ready pin
 	SetPinMode(SbcTfrReadyPin, OUTPUT_LOW);
 
-	// Allocate buffers in SBC mode
 #if HAS_LWIP_NETWORKING
 	// We are going try allocating the transfer buffer memory from the PBUF pool.
 	// In SAME70 builds we are relying on the PBUF pool size being large enough to accommodate both transfer buffers, because they must be in non-cached RAM.
@@ -471,6 +501,8 @@ void DataTransfer::Init() noexcept
 		txBuffer = (mem != nullptr) ? (char *)mem : (char *)new uint32_t[(SbcTransferBufferSize + 3)/4];
 # endif
 	}
+#elif TGBTC
+	// Nothing to do, we have already allocated memory
 #elif SAME70
 # error Must allocate buffers from non-cached RAM
 #else
@@ -478,7 +510,9 @@ void DataTransfer::Init() noexcept
 	txBuffer = (char *)new uint32_t[(SbcTransferBufferSize + 3)/4];
 #endif
 
-#if SAME5x
+#if TGBTC
+    InitSpi();
+#elif SAME5x
 	// Initialize SPI
 	for (Pin p : SbcSpiSercomPins)
 	{
@@ -507,7 +541,7 @@ void DataTransfer::Init() noexcept
 	spi_enable_clock(SBC_SPI);
 	spi_disable(SBC_SPI);
 #endif
-
+    
 	dataReceived = false;
 
 #if false // if SAME70
@@ -543,7 +577,9 @@ void DataTransfer::Init() noexcept
 // Re-initialize SPI hardware after it was disabled for USB mode
 void DataTransfer::ReinitSpi() noexcept
 {
-#if SAME5x
+#if TGBTC
+    InitSpi();
+#elif SAME5x
 	for (Pin p : SbcSpiSercomPins)
 	{
 		SetPinFunction(p, SbcSpiSercomPinsMode);
@@ -592,6 +628,9 @@ void DataTransfer::Diagnostics(const StringRef& reply) noexcept
 		reply.lcatf("Transfer state: %d, failed transfers: %u, checksum errors: %u", (int)state, failedTransfers, checksumErrors);
 		reply.lcatf("RX/TX seq numbers: %d/%d", (int)rxHeader.sequenceNumber, (int)txHeader.sequenceNumber);
 		reply.lcatf("SPI underruns %u, overruns %u", spiTxUnderruns.load(), spiRxOverruns.load());
+#if TGBTC
+		reply.lcatf("CRC errors header %u, data %u", (unsigned)HeaderCRCErrors, (unsigned)DataCRCErrors);
+#endif
 	}
 }
 
@@ -777,6 +816,31 @@ int DataTransfer::ReadFileData(char *buffer, size_t length) noexcept
 	return bytesToRead;
 }
 
+// Read a chunk of a directory listing. Returns the number of bytes copied into the buffer
+size_t DataTransfer::ReadFileList(char *buffer, size_t length, bool& endOfList) noexcept
+{
+	// Read header
+	const FileListHeader *header = ReadDataHeader<FileListHeader>();
+	endOfList = header->endOfList;
+
+	// Read entry data if applicable. The read pointer must be advanced even if we cannot use the data
+	if (header->dataLength == 0)
+	{
+		return 0;
+	}
+
+	const char *listData = ReadData(header->dataLength);
+	if (header->dataLength > length)
+	{
+		// DSF is told how much room we have, so this means the two sides disagree about the format
+		endOfList = true;
+		return 0;
+	}
+
+	memcpy(buffer, listData, header->dataLength);
+	return header->dataLength;
+}
+
 GCodeChannel DataTransfer::ReadSetLastCodeResult(GCodeResult& result) noexcept
 {
 	// Read header
@@ -900,6 +964,9 @@ TransferState DataTransfer::DoTransfer() noexcept
 			const uint32_t checksum = CalcCRC32(reinterpret_cast<const char *>(&rxHeader), sizeof(SpiTransferHeader) - sizeof(uint32_t));
 			if (rxHeader.crcHeader != checksum)
 			{
+#if TGBTC
+				HeaderCRCErrors++;
+#endif
 				if (reprap.Debug(Module::SbcInterface))
 				{
 					debugPrintf("Bad header CRC (expected %08" PRIx32 ", got %08" PRIx32 ")\n", rxHeader.crcHeader, checksum);
@@ -973,6 +1040,9 @@ TransferState DataTransfer::DoTransfer() noexcept
 			const uint32_t checksum = CalcCRC32(rxBuffer, rxHeader.dataLength);
 			if (rxHeader.crcData != checksum)
 			{
+#if TGBTC
+				DataCRCErrors++;
+#endif
 				if (reprap.Debug(Module::SbcInterface))
 				{
 					debugPrintf("Bad data CRC (expected %08" PRIx32 ", got %08" PRIx32 ")\n", rxHeader.crcData, checksum);
@@ -1023,6 +1093,17 @@ TransferState DataTransfer::DoTransfer() noexcept
 			{
 				// Retry succeeded
 				ExchangeHeader();
+			}
+			else if ((rxResponse & 0xFF) == SbcFormatCode)
+			{
+				// The SBC restarted the full transfer and sent a new header instead of a data response.
+				// Most of that header was lost, so report a bad header checksum to make the SBC send it again
+				if (reprap.Debug(Module::SbcInterface))
+				{
+					debugPrintf("Received header instead of data response retry\n");
+				}
+				ExchangeResponse(SpiTransferResponse::BadHeaderChecksum);
+				state = InternalTransferState::ExchangingHeaderResponse;
 			}
 			else
 			{
@@ -1902,6 +1983,30 @@ bool DataTransfer::WriteSecureDeleteFile(const char *filename) noexcept
 
 	// Write filename
 	WriteData(filename, filenameLength);
+	return true;
+}
+
+bool DataTransfer::WriteGetFileList(const char *directory, uint32_t startIndex, uint32_t maxLength) noexcept
+{
+	// Check if it fits
+	size_t directoryLength = strlen(directory);
+	if (!CanWritePacket(sizeof(GetFileListHeader) + directoryLength))
+	{
+		return false;
+	}
+
+	// Write packet header
+	(void)WritePacketHeader(FirmwareRequest::GetFileList, sizeof(GetFileListHeader) + directoryLength);
+
+	// Write header
+	GetFileListHeader *header = WriteDataHeader<GetFileListHeader>();
+	header->startIndex = startIndex;
+	header->maxLength = maxLength;
+	header->directoryLength = directoryLength;
+	header->padding = 0;
+
+	// Write directory name
+	WriteData(directory, directoryLength);
 	return true;
 }
 

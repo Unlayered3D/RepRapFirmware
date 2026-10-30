@@ -78,7 +78,8 @@ public:
 
 #if SUPPORT_CAN_EXPANSION
 	// Handle a request for movement delay received from an expansion board
-	static void ProcessMovementDelayRequest(uint32_t delayRequested) noexcept;
+	static uint32_t ProcessMovementDelayRequest(uint32_t delayRequested) noexcept;	// returns the resulting total delay
+	static constexpr uint32_t MaxPlausibleMovementDelay = StepClockRate;			// a total movement delay above this is worth telling the user about, 1 second
 
 	// Check whether the movement delay has increased since we last called this. If yes, return the movement delay; else return zero.
 	static Ticks CheckMovementDelayIncreased() noexcept;
@@ -105,12 +106,18 @@ public:
 	static float TicksToFloatMicroseconds(uint32_t n) noexcept { return (float)n * (1000000.0f/(float)StepClockRate); }
 
 #if SUPPORT_REMOTE_COMMANDS
+
+# if !EXTERNAL_CAN_TIMESTAMP_COUNTER
+	static void CanTimingMessageReceived(uint16_t messageTime, uint16_t currentTime) noexcept;
+# endif
+
 	static void ProcessTimeSyncMessage(const CanMessageTimeSync& msg, size_t msgLen, uint16_t timeStamp) noexcept;
 	static uint32_t ConvertToMasterTime(uint32_t localTime) noexcept { return localTime - localTimeOffset; }
 	static uint32_t GetMasterTime() noexcept { return ConvertToMasterTime(GetTimerTicks()); }
 
 	static bool CheckSynced() noexcept;											// check whether we have synced and received a clock sync message recently
 	static bool IsSynced() noexcept;											// check whether we have synced
+	static uint32_t GetWhenLastSynced() noexcept { return whenLastSynced; }		// get the millis tick count when we last received a sync message
 
 	static constexpr uint32_t MinSyncInterval = 2000;							// maximum interval in milliseconds between sync messages for us to remain synced
 																				// increased from 1000 because of workaround we added for bad Tx time stamps on SAME70
@@ -140,16 +147,27 @@ private:
 	static uint32_t prevMasterTime;												// the previous master time received
 	static uint32_t prevLocalTime;												// the previous local time when the master time was received, corrected for receive processing delay
 	static int32_t peakPosJitter, peakNegJitter;								// the max and min corrections we made to local time offset while synced
-	static int32_t errorAccumulator;												// the average time sync error
+	static int32_t errorAccumulator;											// the average time sync error
 	static bool gotJitter;														// true if we have recorded the jitter
-	static uint32_t peakReceiveDelay;											// the maximum receive delay we measured by using the receive time stamp
+	static uint32_t maxReceiveDelay;											// the maximum receive delay we measured by using the receive time stamp
+	static uint32_t minReceiveDelay;											// the minimum receive delay we measured by using the receive time stamp
 	static volatile unsigned int syncCount;										// the number of messages we have received since starting sync
 	static unsigned int numJitterResyncs, numTimeoutResyncs;
+
+#if !EXTERNAL_CAN_TIMESTAMP_COUNTER
+	// Values captured when the most recent message was received into dedicated receive buffer 0
+	static uint16_t lastTimeSyncMessageStamp;
+	static uint16_t lastCurrentTimeStamp;
+	static uint32_t lastStepTime;
+#endif
 
 	static constexpr uint32_t MaxSyncJitter = StepClockRate/100;				// 10ms
 	static constexpr unsigned int MaxSyncCount = 10;
 #endif
 };
+#if TGBTC && STM32
+extern TIM_HandleTypeDef *STHandle;
+#endif
 
 // Function GetTimerTicks() is very short on SAM4E processors so we inline it
 #if SAM4E
@@ -171,6 +189,8 @@ inline __attribute__((always_inline)) uint16_t StepTimer::GetTimerTicks16() noex
 {
 #if SAME70 || SAM4S
 	return (uint16_t)STEP_TC->TC_CHANNEL[STEP_TC_CHAN].TC_CV;
+#elif TGBTC && STM32
+	return (uint16_t)__HAL_TIM_GET_COUNTER(STHandle);
 #else
 	return (uint16_t)GetTimerTicks();
 #endif

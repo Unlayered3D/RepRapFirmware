@@ -31,6 +31,10 @@
 #endif
 
 #if SUPPORT_REMOTE_COMMANDS
+#if TGBTC
+#  include <CanMessageGenericTables.h>
+#  include <CanMessageGenericParser.h>
+#endif
 # include <Hardware/NonVolatileMemory.h>
 
 static uint8_t expectedSeq = 0xFF;
@@ -59,12 +63,25 @@ pre(buf->id.MsgType() == CanMessageType::firmwareBlockRequest)
 	   )																	// we only understand bootloader version 0 and files requests for main firmware and bootloader
 	{
 		String<MaxFilenameLength> fname;
-		fname.copy((msg.fileWanted == (unsigned int)FirmwareModule::bootloader) ? "Duet3Bootloader-" : "Duet3Firmware_");
+#if TGBTC
+		// allow use of non Duet firmware
+		if (IsSTM32Firmware(msg.boardType, Strnlen(msg.boardType, msg.GetBoardTypeLength(buf->dataLength))))
+		{
+			fname.copy((msg.fileWanted == (unsigned int)FirmwareModule::bootloader) ? "bootloader_" : "firmware_");
+		}
+		else
+#endif
+		{
+			fname.copy((msg.fileWanted == (unsigned int)FirmwareModule::bootloader) ? "Duet3Bootloader-" : "Duet3Firmware_");
+		}
 		fname.catn(msg.boardType, msg.GetBoardTypeLength(buf->dataLength));
 		fname.cat((msg.uf2Format) ? ".uf2" : ".bin");
-
 		uint32_t fileOffset = msg.fileOffset, fileLength = 0;
 		uint32_t lreq = msg.lengthRequested;
+
+		// Some bootloaders inadvertently set the BRS bit in the request even though bootloaders shouldn't use BRS.
+		// Clear the BRS bit to ensure that the response is sent without using BRS.
+		buf->useBrs = 0;
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
 		// Fetch the firmware file from the local SD card or SBC
@@ -165,7 +182,7 @@ pre(buf->id.MsgType() == CanMessageType::firmwareBlockRequest)
 
 // Handle an input state change message
 // This is the old version, retained for now for compatibility with expansion boards running older firmware. Remove it in due course.
-static void HandleInputStateChangedV1(const CanMessageInputChangedV1& msg, CanAddress src, uint16_t timeStamp) noexcept
+static void HandleInputStateChangedV1(const CanMessageInputChangedV1& msg, CanAddress src) noexcept
 {
 	bool endstopStatesChanged = false;
 	Platform& p = reprap.GetPlatform();
@@ -176,22 +193,23 @@ static void HandleInputStateChangedV1(const CanMessageInputChangedV1& msg, CanAd
 		switch (handle.parts.type)
 		{
 		case RemoteInputHandle::typeEndstop:
-			p.GetEndstops().HandleRemoteEndstopChange(src, handle.parts.major, handle.parts.minor, timeStamp, state);
+			p.GetEndstops().HandleRemoteEndstopChange(src, handle.parts.major, handle.parts.minor, StepTimer::GetTimerTicks(), state);
 			endstopStatesChanged = true;
 			break;
 
 		case RemoteInputHandle::typeZprobe:
-			p.GetEndstops().HandleRemoteZProbeChange(src, handle.parts.major, handle.parts.minor, timeStamp, state, msg.GetEntryReading(i));
+			p.GetEndstops().HandleRemoteZProbeChange(src, handle.parts.major, handle.parts.minor, StepTimer::GetTimerTicks(), state, msg.GetEntryReading(i));
 			endstopStatesChanged = true;
 			break;
 
 		case RemoteInputHandle::typeGpIn:
 			p.HandleRemoteGpInChange(src, handle.parts.major, handle.parts.minor, state);
+			endstopStatesChanged = true;					// the port may be bound to an extruder endstop, see the E parameter of M574
 			break;
 
 		case RemoteInputHandle::typeStallEndstop:
 			// In this case there should be exactly one handle and the 'reading' is a bitmap of stalled drivers
-			p.GetEndstops().HandleStalledRemoteDrivers(src, LocalDriversBitmap((LocalDriversBitmap::BaseType)msg.GetEntryReading(i)), timeStamp);
+			p.GetEndstops().HandleStalledRemoteDrivers(src, LocalDriversBitmap((LocalDriversBitmap::BaseType)msg.GetEntryReading(i)), StepTimer::GetTimerTicks());
 			break;
 
 		default:
@@ -217,22 +235,23 @@ static void HandleInputStateChangedV2(const CanMessageInputChangedV2& msg, CanAd
 		switch (handle.parts.type)
 		{
 		case RemoteInputHandle::typeEndstop:
-			p.GetEndstops().HandleRemoteEndstopChange(src, handle.parts.major, handle.parts.minor, msg.GetWhen(i), state);
+			p.GetEndstops().HandleRemoteEndstopChange(src, handle.parts.major, handle.parts.minor, CanInterface::Convert16bitReceivedTimeStampTo32bits(msg.GetWhen(i)), state);
 			endstopStatesChanged = true;
 			break;
 
 		case RemoteInputHandle::typeZprobe:
-			p.GetEndstops().HandleRemoteZProbeChange(src, handle.parts.major, handle.parts.minor, msg.GetWhen(i), msg.GetEntryReading(i), state);
+			p.GetEndstops().HandleRemoteZProbeChange(src, handle.parts.major, handle.parts.minor, CanInterface::Convert16bitReceivedTimeStampTo32bits(msg.GetWhen(i)), state, msg.GetEntryReading(i));
 			endstopStatesChanged = true;
 			break;
 
 		case RemoteInputHandle::typeGpIn:
 			p.HandleRemoteGpInChange(src, handle.parts.major, handle.parts.minor, state);
+			endstopStatesChanged = true;					// the port may be bound to an extruder endstop, see the E parameter of M574
 			break;
 
 		case RemoteInputHandle::typeStallEndstop:
 			// In this case there should be exactly one handle and the 'reading' is a bitmap of stalled drivers
-			p.GetEndstops().HandleStalledRemoteDrivers(src, LocalDriversBitmap((LocalDriversBitmap::BaseType)msg.GetEntryReading(i)), msg.GetWhen(i));
+			p.GetEndstops().HandleStalledRemoteDrivers(src, LocalDriversBitmap((LocalDriversBitmap::BaseType)msg.GetEntryReading(i)), CanInterface::Convert16bitReceivedTimeStampTo32bits(msg.GetWhen(i)));
 			break;
 
 		default:
@@ -253,7 +272,7 @@ static GCodeResult EutGetInfo(const CanMessageReturnInfo& msg, const StringRef& 
 	switch (msg.type)
 	{
 	case CanMessageReturnInfo::typeFirmwareVersion:
-		reply.printf("%s firmware version " VERSION " (%s%s)", reprap.GetPlatform().GetElectronicsString(), DateText, TimeSuffix);
+		reply.printf("%s firmware version " VERSION " (%s)", reprap.GetPlatform().GetElectronicsString(), DateTimeText);
 		break;
 
 	case CanMessageReturnInfo::typeBoardName:
@@ -264,7 +283,11 @@ static GCodeResult EutGetInfo(const CanMessageReturnInfo& msg, const StringRef& 
 		break;
 
 	case CanMessageReturnInfo::typeBootloaderName:
+#if TGBTC
+		reply.copy(BOARD_SHORT_NAME);
+#else
 		reply.copy("(n/a)");
+#endif
 		break;
 
 	case CanMessageReturnInfo::typeBoardUniqueId:
@@ -298,18 +321,72 @@ static GCodeResult InitiateFirmwareUpdate(const CanMessageUpdateYourFirmware& ms
 
 	if (msg.module == 0)
 	{
+// We use a built in IAP on TGBTC
+#if TGBTC
+		if (!reprap.CheckFirmwareUpdatePossible())
+		{
+			reply.printf("Fimware update unavailable, no SD or CAN bootloader\n");
+			return GCodeResult::error;
+		}
+#else
 		if (!reprap.GetPlatform().FileExists(FIRMWARE_DIRECTORY, IAP_CAN_LOADER_FILE))
 		{
 			reply.printf("In-application programming binary \"%s\" not found on board %u", FIRMWARE_DIRECTORY IAP_CAN_LOADER_FILE, CanInterface::GetCanAddress());
 			return GCodeResult::error;
 		}
+#endif
 		reply.printf("Board %u starting firmware update", CanInterface::GetCanAddress());
 		reprap.ScheduleFirmwareUpdateOverCan();
 		return GCodeResult::ok;
 	}
+#if TGBTC
+	if (msg.module == 3)
+	{
+		reply.printf("Board %u starting BootLoader update", CanInterface::GetCanAddress());
+		reprap.ScheduleBootloaderUpdateOverCan();
+		return GCodeResult::ok;
+	}
+#endif
 	reply.copy("unknown firmware module number");
 	return GCodeResult::error;
 }
+
+#if TGBTC
+static GCodeResult ChangeAddressAndDataRate(const CanMessageSetAddressAndNormalTiming &msg, const StringRef &reply) noexcept
+{
+	if (msg.oldAddress == CanInterface::GetCanAddress())
+	{
+		bool seen = false;
+
+		// Check whether we are setting the address
+		if (msg.newAddress != 0 && msg.newAddress <= CanId::MaxCanAddress && msg.newAddress == (uint8_t)~msg.newAddressInverted)
+		{
+			seen = true;
+		}
+		if (seen)
+		{
+			reprap.ScheduleChangeCanExpansionAddress(msg.newAddress);
+		}
+		else
+		{
+#if 0
+			CanTiming timing;
+			can0dev->GetLocalCanTiming(timing);
+			reply.printf("CAN bus speed %.1fkbps, tseg1 %.2f, jump width %.2f",
+							(double)((float)CanTiming::ClockFrequency/(1000 * timing.period)),
+							(double)((float)timing.tseg1/(float)timing.period),
+							(double)((float)timing.jumpWidth/(float)timing.period));
+#else
+			reply.printf("Timing data not available");
+#endif
+		}
+		return GCodeResult::ok;
+	}
+
+	reply.copy("Received ChangeAddress message for wrong board");
+	return GCodeResult::error;
+}
+#endif
 
 #endif	// SUPPORT_REMOTE_COMMANDS
 
@@ -526,7 +603,7 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 
 			case CanMessageType::setDriverStates:
 				requestId = buf->msg.multipleDrivesRequestUint16.requestId;
-				rslt = reprap.GetMove().EutHandleSetDriverStates(buf->msg.multipleDrivesRequestDriverState, replyRef);
+				rslt = reprap.GetMove().EutHandleSetDriverStates(buf->msg.multipleDrivesRequestDriverState, buf->dataLength, replyRef);
 				break;
 
 			case CanMessageType::m915:
@@ -564,6 +641,29 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 				rslt = reprap.GetMove().EutProcessM569Point7(buf->msg.generic, replyRef);
 				break;
 
+			case CanMessageType::setStandstillCurrentFactor:
+				requestId = buf->msg.multipleDrivesRequestFloat.requestId;
+				rslt = reprap.GetMove().EutSetStandstillCurrentFactor(buf->msg.multipleDrivesRequestFloat, buf->dataLength, replyRef);
+				break;
+
+			case CanMessageType::m970:
+				requestId = buf->msg.generic.requestId;
+# if SUPPORT_PHASE_STEPPING
+				rslt = reprap.GetMove().EutProcessM970(buf->msg.generic, replyRef);
+# else
+				rslt = GCodeResult::errorNotSupported;
+# endif
+				break;
+
+			case CanMessageType::m970p3:
+				requestId = buf->msg.generic.requestId;
+# if SUPPORT_PHASE_STEPPING
+				rslt = reprap.GetMove().EutProcessM970Point3(buf->msg.generic, replyRef);
+# else
+				rslt = GCodeResult::errorNotSupported;
+# endif
+				break;
+
 			case CanMessageType::createInputMonitorV1:
 				requestId = buf->msg.createInputMonitorV1.requestId;
 				rslt = InputMonitor::Create(buf->msg.createInputMonitorV1, buf->dataLength, replyRef, extra);
@@ -584,6 +684,12 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 				InputMonitor::ReadInputs(buf);
 				CanInterface::SendResponseNoFree(buf);
 				return;
+#if TGBTC
+			case CanMessageType::setAddressAndNormalTiming:
+				requestId = buf->msg.setAddressAndNormalTiming.requestId;
+				rslt = ChangeAddressAndDataRate(buf->msg.setAddressAndNormalTiming, replyRef);
+				break;
+#endif
 
 			// Filament monitor commands
 			case CanMessageType::createFilamentMonitor:
@@ -603,8 +709,26 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 
 			case CanMessageType::m655:
 				requestId = buf->msg.generic.requestId;
+#if TGBTC
+				// temporary until we have a custom can message for M569.9
+				{
+					CanMessageGenericParser parser(buf->msg.generic, M655Params);
+					int32_t drive, dtype;
+					if (parser.GetIntParam('R', drive) && parser.GetIntParam('S', dtype))
+					{
+						SmartDrivers::SetDriverType(drive, (DriverType)dtype);
+						rslt = GCodeResult::ok;
+					}
+					else
+					{
+						reply.copy("missing parameter");
+						rslt = GCodeResult::error;
+					}
+				}
+#else
 				reply.copy("not supported by this board");
 				rslt = GCodeResult::error;
+#endif
 				break;
 
 			case CanMessageType::diagnosticTest:
@@ -618,9 +742,14 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 				rslt = reprap.ProcessRemoteM111(buf->msg.generic, replyRef);
 				break;
 
+			case CanMessageType::setConnectionTimeout:
+				requestId = buf->msg.generic.requestId;
+				rslt = CanInterface::ProcessM959(buf->msg.generic, replyRef);
+				break;
+
 			default:
 				// We received a message type that we don't recognise. If it's a broadcast, ignore it. If it's addressed to us, send a reply.
-				if (buf->id.Src() != CanInterface::GetCanAddress())
+				if (buf->id.Dst() != CanInterface::GetCanAddress())
 				{
 					return;
 				}
@@ -643,8 +772,8 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 				uint8_t fragmentNumber = 0;
 				for (;;)
 				{
-					const size_t fragmentLength = min<size_t>(totalLength - lengthDone, CanMessageStandardReply::MaxTextLength);
-					memcpy(msg->text, reply.c_str() + lengthDone, fragmentLength);
+					const size_t fragmentLength = min<size_t>(totalLength - lengthDone, msg->GetMaxTextLength());
+					memcpy(msg->GetText(), reply.c_str() + lengthDone, fragmentLength);
 					lengthDone += fragmentLength;
 					buf->dataLength = msg->GetActualDataLength(fragmentLength);
 					msg->fragmentNumber = fragmentNumber;
@@ -657,6 +786,7 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 					msg->moreFollows = true;
 					CanInterface::SendResponseNoFree(buf);
 					++fragmentNumber;
+					msg->numWords = 0;						// data words go in fragment 0 only
 				}
 			}
 		}
@@ -668,7 +798,7 @@ void CommandProcessor::ProcessReceivedMessage(CanMessageBuffer *buf) noexcept
 			{
 			case CanMessageType::inputStateChangedV1:
 				//TODO we should preferably handle this one using a separate high-priority queue or buffer
-				HandleInputStateChangedV1(buf->msg.inputChangedV1, buf->id.Src(), buf->timeStamp);
+				HandleInputStateChangedV1(buf->msg.inputChangedV1, buf->id.Src());
 				break;
 
 			case CanMessageType::inputStateChangedV2:

@@ -12,11 +12,11 @@
 
 #ifndef VERSION
 // Note: the complete VERSION string must be in standard version number format and must not contain spaces! This is so that DWC can parse it.
-# define MAIN_VERSION	"3.7.0-beta.1"
+# define MAIN_VERSION	"3.7.0"
 // Fork identity. Without this a running board is indistinguishable from stock Duet firmware in
 // M115 and in DWC, which matters when several machines run different local builds. Bump
 // FORK_VERSION whenever a build is flashed to a machine that others may need to identify.
-# define FORK_VERSION	"+unlayered.19"
+# define FORK_VERSION	"+unlayered.20"
 # ifdef USE_CAN0
 #  define VERSION_SUFFIX	FORK_VERSION "(CAN0)"
 # elif defined(NO_S_CURVE)
@@ -28,7 +28,7 @@
 #endif
 
 extern const char *_ecv_array const DateText;
-extern const char *_ecv_array const TimeSuffix;
+extern const char *_ecv_array const DateTimeText;
 
 #define AUTHORS "reprappro, dc42, chrishamm, t3p3, dnewman, printm3d"
 

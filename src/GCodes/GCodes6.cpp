@@ -908,7 +908,7 @@ GCodeResult GCodes::FindCenterOfCavity(GCodeBuffer& gb, const StringRef& reply) 
 
 	// Get the feed rate, backoff distance, and axis
 	m675Settings.axisNumber = FindAxisLetter(gb);
-	const bool rotational = reprap.GetMove().IsAxisLinear(m675Settings.axisNumber);
+	const bool rotational = reprap.GetMove().IsAxisRotational(m675Settings.axisNumber);
 	gb.MustSee(feedrateLetter);
 	m675Settings.feedRate = gb.LatestMachineState().feedRate = gb.ConvertSpeed(gb.GetFValue(), !rotational);		// don't apply the speed factor to homing and other special moves
 	m675Settings.backoffDistance = gb.Seen('R') ? ((rotational) ? gb.GetFValue() : gb.GetDistance()) : 5.0;
@@ -971,14 +971,24 @@ void GCodes::SetupM675BackoffMove(GCodeBuffer& gb, float position) noexcept
 
 #if SUPPORT_SCANNING_PROBES
 
-// Calibrate height vs. reading for a scanning Z probe. We have already checked the probe is a scanning one and that scanningRange is a sensible value.
-GCodeResult GCodes::HandleM558Point1or2or3(GCodeBuffer& gb, const StringRef &reply, unsigned int probeNumber) THROWS(GCodeException)
+// Handle M558.1 to M558.3 for a scanning Z probe and M558.4 for a load cell probe
+GCodeResult GCodes::HandleM558Subcommand(GCodeBuffer& gb, const StringRef &reply, unsigned int probeNumber) THROWS(GCodeException)
 {
 	const auto zp = platform.GetEndstops().GetZProbe(probeNumber);
 	if (zp.IsNull())
 	{
 		reply.copy("invalid Z probe index");
 		return GCodeResult::error;
+	}
+
+	if (gb.GetCommandFraction() == 4)
+	{
+		if (!zp->IsLoadCell())
+		{
+			reply.printf("probe %u is not a load cell probe", probeNumber);
+			return GCodeResult::error;
+		}
+		return zp->Tare(reply);
 	}
 
 	if (!zp->IsScanning())

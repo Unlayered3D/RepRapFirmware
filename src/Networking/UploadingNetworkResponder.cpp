@@ -9,6 +9,9 @@
 #include "Socket.h"
 #include <Platform/Platform.h>
 
+unsigned UploadingNetworkResponder::numUploads = 0;
+unsigned UploadingNetworkResponder::numUploadErrors = 0;
+
 UploadingNetworkResponder::UploadingNetworkResponder(NetworkResponder *_ecv_from _ecv_null n) noexcept : NetworkResponder(n)
 #if HAS_MASS_STORAGE
 	, uploadError(false), dummyUpload(false)
@@ -78,6 +81,8 @@ bool UploadingNetworkResponder::StartUpload(const char *_ecv_array folder, const
 // Finish a file upload. Set variable uploadError if anything goes wrong.
 void UploadingNetworkResponder::FinishUpload(uint32_t fileLength, time_t fileLastModified, bool gotCrc, uint32_t expectedCrc) noexcept
 {
+	numUploads++;
+	skt->SetResponder(nullptr);
 	if (!dummyUpload)
 	{
 		// Flush remaining data for FSO
@@ -98,6 +103,7 @@ void UploadingNetworkResponder::FinishUpload(uint32_t fileLength, time_t fileLas
 			uploadError = true;
 			GetPlatform().MessageF(ErrorMessage, "Uploaded file CRC is different (%08" PRIx32 " vs. expected %08" PRIx32 ")\n", fileBeingUploaded.GetCrc32(), expectedCrc);
 		}
+		if (uploadError) numUploadErrors++;
 
 		// Close the file
 		if (fileBeingUploaded.IsLive())

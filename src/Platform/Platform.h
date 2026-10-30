@@ -84,6 +84,10 @@ constexpr size_t NumAdcFilters = NumThermistorInputs + 3;
 # else
 constexpr size_t NumAdcFilters = NumThermistorInputs + 2;
 # endif
+#elif HAS_CPU_TEMP_SENSOR && TGBTC
+constexpr size_t VrefFilterIndex = NumThermistorInputs;
+constexpr size_t CpuTempFilterIndex = NumThermistorInputs + 1;
+constexpr size_t NumAdcFilters = NumThermistorInputs + 2;
 #elif HAS_CPU_TEMP_SENSOR && !SAME5x
 constexpr size_t CpuTempFilterIndex = NumThermistorInputs;
 constexpr size_t NumAdcFilters = NumThermistorInputs + 1;
@@ -129,6 +133,7 @@ enum class BoardType : uint8_t
 	Duet3_6HC_v102 = 3,
 	Duet3_6HC_v102b = 4,
 	Duet3_6HC_v102c = 5,
+	Duet3_6HC_v150 = 6,
 #elif defined(DUET3_MB6XD)
 	Duet3_6XD_v01 = 1,
 	Duet3_6XD_v100 = 2,
@@ -147,6 +152,8 @@ enum class BoardType : uint8_t
 	DuetM_10 = 1,
 #elif defined(PCCB_10)
 	PCCB_v10 = 1
+#elif defined (TGBTC)
+	TeamGloomy_BTC = 1
 #elif defined(INDX)
 	Indx,
 #else
@@ -173,9 +180,13 @@ enum class DiagnosticTestType : unsigned int
 	TimeCRC32 = 107,				// time how long it takes to calculate CRC32
 	TimeGetTimerTicks = 108,		// time now long it takes to read the step clock
 	UndervoltageEvent = 109,		// pretend an undervoltage condition has occurred
-#if SUPPORT_S_CURVE
+#if SUPPORT_3RD_ORDER
 	TimeCubicSolver = 110,
 	TimeQuarticSolver = 111,
+#endif
+
+#if TGBTC
+	PrintBoardConfiguration = 200,	// Prints out all pin/values loaded from SDCard to configure board
 #endif
 
 	SetWriteBuffer = 500,			// enable/disable the write buffer
@@ -189,7 +200,8 @@ enum class DiagnosticTestType : unsigned int
 	UnalignedMemoryAccess = 1005,	// do an unaligned memory access to test exception handling
 	BusFault = 1006,				// generate a bus fault
 	AccessMemory = 1007,			// read or write  memory
-	MemoryLeak = 1008				// cause an out of memory fault
+	MemoryLeak = 1008,				// cause an out of memory fault
+	WedgeI2CBus = 1009				// leave an I2C slave holding SDA low to test bus recovery
 };
 
 /***************************************************************************************************************/
@@ -249,8 +261,12 @@ public:
 
 	void Diagnostics(unsigned int part, const StringRef& reply) noexcept;
 	static constexpr unsigned int NumPlatformDiagnosticParts = 7;
-
+#if TGBTC
+	static SharedSpiDevice& GetSharedSpiDevice(SSPChannel chan) noexcept { return *_ecv_not_null(SharedSpiDevices[chan]); }
+	static void SetSharedSpiDevice(SSPChannel chan, SharedSpiDevice& device) { SharedSpiDevices[chan] = &device; }
+#else
 	static SharedSpiDevice& GetSharedSpiDevice() noexcept { return *_ecv_not_null(mainSharedSpiDevice); }
+#endif
 
 	GCodeResult DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, OutputBuffer *_ecv_null & buf, unsigned int d) THROWS(GCodeException);
 	static const char *_ecv_array GetResetReasonText() noexcept;
@@ -527,10 +543,6 @@ public:
 
 	void SetDiagLed(bool on) const noexcept;
 
-#if SUPPORT_MULTICAST_DISCOVERY
-	void InvertDiagLed() const noexcept;
-#endif
-
 #if defined(DUET3MINI) && SUPPORT_TMC2240 != 0
 	bool HasTmc2240Expansion() const noexcept { return hasTmc2240Expansion; }
 	const char *_ecv_array null GetExpansionBoardName() const noexcept { return (hasTmc2240Expansion) ? "Duet3 Mini 2+ (TMC2240)" : nullptr; }
@@ -545,15 +557,30 @@ public:
 	// Build up a message in genericDebugBuffer, then set haveGenericDebug to true to indicate it is complete and ready to output.
 	// Optionally set shouldTurnOffHeaters before setting hasGenericDebug.
 	// It will be set false again when the message has been output and the buffer is free again.
-	static String<StringLength256> genericDebugBuffer;
+	static String<StringLength256> *_ecv_null genericDebugBuffer;
 	static bool hasGenericDebug;
 	static bool shouldTurnOffHeaters;
+
+	// Build up a warning in moveWarningBuffer the same way, then set hasMoveWarning. Emitted from Spin because the
+	// producers run on the Move task, whose stack cannot take the logging and output buffer paths of Message.
+	// Both buffers are allocated when debugging is first enabled, before the debug flags become visible, so the
+	// flag-gated producers never see a null pointer and the memory is not wasted in normal use. The step error
+	// producers are not flag-gated and must check for a null buffer; their flags and safety actions do not depend on it
+#if SUPPORT_ASYNC_MOVES
+	static String<StringLength256> *_ecv_null moveWarningBuffer;
+	static bool hasMoveWarning;
+#endif
+	static void EnsureDebugBuffers() noexcept;
 
 protected:
 	DECLARE_OBJECT_MODEL_WITH_ARRAYS
 
 private:
+#if TGBTC
+	static SharedSpiDevice *_ecv_null SharedSpiDevices[NumSPIDevices];
+#else
 	static SharedSpiDevice *_ecv_null mainSharedSpiDevice;
+#endif
 
 	void RawMessage(const GCodeBuffer *_ecv_null gb, MessageType type, const char *_ecv_array message) noexcept;	// called by Message after handling error/warning flags
 	float GetCpuTemperature() const noexcept;
@@ -718,6 +745,9 @@ private:
 #endif
 
 	bool autoSaveEnabled;
+# if TGBTC
+	uint16_t dummyVoltageAdcReading;
+# endif
 
 	enum class AutoSaveState : uint8_t
 	{
@@ -765,6 +795,9 @@ private:
 
 	// Misc
 	static bool deliberateError;						// true if we deliberately caused an exception for testing purposes. Must be static in case of exception during startup.
+#if TGBTC
+	uint32_t vRefCorrection;
+#endif
 };
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
