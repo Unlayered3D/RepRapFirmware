@@ -111,6 +111,7 @@ private:
 
 	unsigned int numLookaheadUnderruns = 0;										// How many times we have run out of moves to adjust during lookahead
 	unsigned int numNoMoveUnderruns = 0;										// How many times we wanted a new move but there were none
+	unsigned int numSegmentMemoryWaits = 0;										// How many times we deferred preparing a move to stay clear of OutOfMemory
 	unsigned int numLookaheadErrors = 0;										// How many times our lookahead algorithm failed
 
 	float simulationTime = 0.0;													// Print time since we started simulating

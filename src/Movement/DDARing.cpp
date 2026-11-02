@@ -395,6 +395,14 @@ uint32_t DDARing::PrepareMoves(DDA *firstUnpreparedMove, uint32_t prepareAdvance
 #endif
 		  )
 	{
+		// If moves are still executing and the segment pool can't grow safely, wait for them to release their segments.
+		// When nothing is executing every segment is on the free list, so this never stops motion starting.
+		if (moveTimeLeft != 0 && !MoveSegment::HaveRoomToPrepareMove())
+		{
+			++numSegmentMemoryWaits;
+			break;
+		}
+
 #if SUPPORT_S_CURVE
 		// If the move to prepare is an S-curve move than it may not have been planned yet.
 		// Even if it has been planned, if any moves have been added to the ring then we may need to re-plan it
@@ -751,10 +759,10 @@ bool DDARing::LowPowerOrStallPause(MovementState& ms) noexcept
 
 void DDARing::Diagnostics(const StringRef& reply, unsigned int ringNumber) noexcept
 {
-	reply.lcatf("=== DDARing %u ===\nScheduled moves %" PRIu32 ", completed %" PRIu32 ", LaErrors %u, Underruns [%u, %u]\n",
-				ringNumber, scheduledMoves, completedMoves, numLookaheadErrors, numLookaheadUnderruns, numNoMoveUnderruns
+	reply.lcatf("=== DDARing %u ===\nScheduled moves %" PRIu32 ", completed %" PRIu32 ", LaErrors %u, Underruns [%u, %u], segment memory waits %u\n",
+				ringNumber, scheduledMoves, completedMoves, numLookaheadErrors, numLookaheadUnderruns, numNoMoveUnderruns, numSegmentMemoryWaits
 			   );
-	numLookaheadUnderruns = numNoMoveUnderruns = numLookaheadErrors = 0;
+	numLookaheadUnderruns = numNoMoveUnderruns = numLookaheadErrors = numSegmentMemoryWaits = 0;
 	reprap.GetGCodes().GetMovementState(ringNumber).Diagnostics(reply);
 }
 
