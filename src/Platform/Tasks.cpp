@@ -68,10 +68,14 @@ uint32_t dummySystemStack[SystemStackSize] __attribute__ ((section (".stack"), u
 #if SAME70
 // On the SAME70 we use matrices of doubles when doing auto calibration, so we need 1800 words of stack even when MaxAxes is only 15 (now 1860 after increasing GCodeReplyLength)
 constexpr unsigned int MainTaskStackWords = max<unsigned int>(1860, (MaxAxes * MaxAxes * 2) + 610);
+#elif TGBTC
+// TeamGloomy raised this for its STM32 boards, which have the RAM for it
+constexpr unsigned int MainTaskStackWords = max<unsigned int>(4000, (MaxAxes * MaxAxes * 2) + 610);
 #else
 // On other processors we use matrices of floats when doing auto calibration
 // Increase minimum stack words to 1370 for WPA Enterprise support (now 1430 after increasing GCodeReplyLength)
-constexpr unsigned int MainTaskStackWords = max<unsigned int>(4000, (MaxAxes * MaxAxes * 2) + 610);
+// Upstream value. A five-axis SAME5x has no RAM to spare for the STM32 figure above (see Move.h).
+constexpr unsigned int MainTaskStackWords = max<unsigned int>(1430, (MaxAxes * MaxAxes * 2) + 610);
 #endif
 
 static TASKMEM Task<MainTaskStackWords> mainTask;

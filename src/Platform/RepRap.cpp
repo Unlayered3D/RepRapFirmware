@@ -720,7 +720,9 @@ void RepRap::Init() noexcept
 			Spin();
 #endif
 		}
+#if TGBTC
 		BoardConfig::LoadBoardConfigFromSBC();
+#endif
 		// Run config.g or config.g.bak
 		if (!RunStartupFile(GCodes::CONFIG_FILE, true))
 		{

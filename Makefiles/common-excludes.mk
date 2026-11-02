@@ -34,12 +34,12 @@ SAME70_FAMILY_C_EXCL := /libc/ /DuetNG/ /DuetM/ /Pccb/ /Display/ /Duet3Mini/ \
 
 # --- SAME5x family: Duet 3 Mini 5+ ---
 # Keeps Display/ and Duet3Mini/ (the Mini has both) and excludes the SAME70/SAM4 hardware.
-SAME5X_FAMILY_CPP_EXCL := /libcpp/ /libc/ /Duet3_V06/ /Hardware/SAME70/ /Hardware/SAM4E/ \
+SAME5X_FAMILY_CPP_EXCL := /libcpp/ /libc/ /Hardware/TGBTC/ /Duet3_V06/ /Hardware/SAME70/ /Hardware/SAM4E/ \
 	/Hardware/SAM4S/ /DuetNG/ /Networking/W5500Ethernet/ /Pccb/ /DuetM/ \
 	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
 	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ /Lwip/doc/
 
-SAME5X_FAMILY_C_EXCL := /libc/ /SBC/ /Hardware/SAME70/ /Hardware/SAM4E/ /Hardware/SAM4S/ \
+SAME5X_FAMILY_C_EXCL := /libc/ /Hardware/TGBTC/ /SBC/ /Hardware/SAME70/ /Hardware/SAM4E/ /Hardware/SAM4S/ \
 	/DuetNG/ /Pccb/ /DuetM/ \
 	/Lwip/src/apps/smtp/ /Lwip/src/apps/snmp/ /Lwip/src/apps/tftp/ /Lwip/src/apps/lwiperf/ \
 	/Lwip/src/apps/sntp/ /Lwip/src/apps/http/ /Lwip/src/apps/mqtt/ /Lwip/src/netif/ppp/ \
