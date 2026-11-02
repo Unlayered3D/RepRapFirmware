@@ -210,11 +210,22 @@ public:
 	// Return the number of MoveSegment objects that have been created
 	static unsigned int NumCreated() noexcept { return numCreated; }
 
+	// Return true if preparing another move cannot run the heap out of memory
+	static bool HaveRoomToPrepareMove() noexcept;
+
 	static constexpr int32_t MinDuration = 10;				// the minimum duration in movement clock ticks that we consider sensible
+
+	// Segments are never returned to the heap, so on a 5-axis machine with dense short moves the pool could otherwise grow
+	// until the board reset with OutOfMemory (.90, 2026-11-01). Before preparing a move we require room for this many
+	// segments, which covers one move on all 6 drives with a 3-impulse shaper, and we keep HeapReservedForOthers bytes
+	// of never-used RAM for everything else that allocates while printing.
+	static constexpr unsigned int SegmentsNeededToPrepareMove = 160;
+	static constexpr size_t HeapReservedForOthers = 4096;
 
 protected:
 	static MoveSegment *_ecv_null freeList;					// list of recycled segment objects
 	static unsigned int numCreated;							// total number of segment objects created
+	static unsigned int numFree;					// number of segment objects on the free list
 
 	MoveSegment *_ecv_null next;							// pointer to the next segment
 	MovementFlags flags;
@@ -296,6 +307,7 @@ inline void MoveSegment::Release(MoveSegment *item) noexcept
 	const auto iflags = IrqSave();
 	item->next = freeList;
 	freeList = item;
+	++numFree;
 	IrqRestore(iflags);
 }
 

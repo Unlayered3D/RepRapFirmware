@@ -11,6 +11,19 @@
 
 MoveSegment *_ecv_null MoveSegment::freeList = nullptr;
 unsigned int MoveSegment::numCreated = 0;
+unsigned int MoveSegment::numFree = 0;
+
+// Return true if preparing another move cannot run the heap out of memory
+bool MoveSegment::HaveRoomToPrepareMove() noexcept
+{
+	const unsigned int freeSegments = numFree;
+	if (freeSegments >= SegmentsNeededToPrepareMove)
+	{
+		return true;
+	}
+	const ptrdiff_t spareHeap = Tasks::GetNeverUsedRam() - (ptrdiff_t)HeapReservedForOthers;
+	return spareHeap > 0 && freeSegments + (unsigned int)spareHeap/sizeof(MoveSegment) >= SegmentsNeededToPrepareMove;
+}
 
 // Allocate a MoveSegment, from the freelist if possible, else create a new one
 MoveSegment *MoveSegment::Allocate(MoveSegment *_ecv_null p_next) noexcept
@@ -20,6 +33,7 @@ MoveSegment *MoveSegment::Allocate(MoveSegment *_ecv_null p_next) noexcept
 	if (ms != nullptr)
 	{
 		freeList = ms->next;
+		--numFree;
 		IrqRestore(iflags);
 		ms->next = p_next;
 	}
