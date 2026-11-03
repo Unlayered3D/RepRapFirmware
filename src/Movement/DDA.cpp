@@ -1147,6 +1147,38 @@ void DDA::MatchSpeeds() noexcept
 			}
 		}
 	}
+
+	// Per-physical-motor jerk (M205.2): the change in each motor's OWN speed across the junction, from the
+	// real step deltas of this move and the next. The axis limits above cannot see it on a coupled kinematic:
+	// on CoreXBYC a C rotation turns the Y motors, and a B/C tilt moves the Z motor through the tool offset.
+	if (totalDistance <= 0.0 || next->totalDistance <= 0.0)
+	{
+		return;
+	}
+	const Move& move = reprap.GetMove();
+	const Kinematics& k = move.GetKinematics();
+	const size_t numTotalAxes = reprap.GetGCodes().GetTotalAxes();
+	for (size_t motor = 0; motor < numTotalAxes; ++motor)
+	{
+		const float maxJ = k.GetMotorMaxJerk(motor);
+		if (maxJ == FLT_MAX)
+		{
+			continue;								// no limit set for this motor
+		}
+		const int32_t thisSteps = endPoint[motor] - prev->endPoint[motor];
+		const int32_t nextSteps = next->endPoint[motor] - endPoint[motor];
+		if (thisSteps == 0 && nextSteps == 0)
+		{
+			continue;								// this motor doesn't move either side of the junction
+		}
+		// motor mm moved per mm (or degree) of commanded travel, signed, in each move
+		const float stepsPerMm = move.DriveStepsPerMm(motor);
+		const float dFraction = fabsf((float)thisSteps / (stepsPerMm * totalDistance) - (float)nextSteps / (stepsPerMm * next->totalDistance));
+		if (dFraction * beforePrepare.targetNextSpeed > maxJ)
+		{
+			beforePrepare.targetNextSpeed = maxJ/dFraction;
+		}
+	}
 }
 
 // Force an end point. Called when a homing switch is triggered.
@@ -1702,7 +1734,8 @@ void DDA::LimitSpeedAndAcceleration(float maxSpeed, float maxAllowedAcceleration
 	}
 }
 
-// Apply per-physical-motor speed/acceleration/jerk limits (M203.2/M201.2/M205.2).
+// Apply per-physical-motor speed/acceleration limits (M203.2/M201.2). The per-motor jerk (M205.2) is a
+// limit on the speed CHANGE at a junction, so it is applied in MatchSpeeds, not here as a speed cap.
 // We use the ACTUAL motor step delta for this move (endPoint - prev->endPoint) rather than the
 // linear motor-mapping matrix. This is essential for kinematics where a single axis move drives
 // motors that the linear matrix doesn't show - e.g. on 5-axis machines a B/C rotation tilts the
@@ -1720,8 +1753,7 @@ void DDA::ApplyPerMotorLimits(const Kinematics& k) noexcept
 	{
 		const float maxV = k.GetMotorMaxFeedrate(motor);
 		const float maxA = k.GetMotorMaxAcceleration(motor);
-		const float maxJ = k.GetMotorMaxJerk(motor);
-		if (maxV == FLT_MAX && maxA == FLT_MAX && maxJ == FLT_MAX)
+		if (maxV == FLT_MAX && maxA == FLT_MAX)
 		{
 			continue;							// no limit set for this motor
 		}
@@ -1741,7 +1773,6 @@ void DDA::ApplyPerMotorLimits(const Kinematics& k) noexcept
 
 		if (maxV != FLT_MAX) { LimitSpeedAndAcceleration(maxV / fraction, FLT_MAX); }
 		if (maxA != FLT_MAX) { LimitSpeedAndAcceleration(FLT_MAX, maxA / fraction); }
-		if (maxJ != FLT_MAX) { LimitSpeedAndAcceleration(maxJ / fraction, FLT_MAX); }
 	}
 }
 

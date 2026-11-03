@@ -243,7 +243,7 @@ private:
 #endif
 
 	void MatchSpeeds() noexcept SPEED_CRITICAL;
-	void ApplyPerMotorLimits(const Kinematics& k) noexcept;					// Apply per-physical-motor speed/acceleration limits (M203.2/M201.2/M205.2)
+	void ApplyPerMotorLimits(const Kinematics& k) noexcept;					// Apply per-physical-motor speed/acceleration limits (M203.2/M201.2); M205.2 jerk is in MatchSpeeds
 	bool IsDecelerationMove() const noexcept;								// return true if this move is or have been might have been intended to be a deceleration-only move
 	bool IsAccelerationMove() const noexcept;								// return true if this move is or have been might have been intended to be an acceleration-only move
 	bool UsesInputShaping() const noexcept;									// return true if this move should use input shaping
