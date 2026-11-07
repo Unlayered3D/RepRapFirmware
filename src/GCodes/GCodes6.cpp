@@ -19,7 +19,8 @@
 
 // Adaptive mesh (M557 ... L<margin>): find the XY extent of the first layer of the file being printed.
 // Only extrusion inside M486 object labels counts, so a purge line or skirt outside the objects is not meshed.
-// If the file has no object labels, all first-layer extrusion counts.
+// If the file has no object labels, extrusion after the first ;LAYER_CHANGE counts (a start G-code purge comes before it);
+// if it has neither, all first-layer extrusion counts. Only moves that travel in XY count, so a bare un-retract is ignored.
 // The scan reads the file a slice at a time so that M557 can return notFinished between slices.
 namespace
 {
@@ -27,12 +28,13 @@ namespace
 	{
 		FileStore *_ecv_null file = nullptr;
 		uint32_t lastStepMillis = 0;
-		float box[2][4];					// [0] inside objects, [1] all extrusion; each is xmin xmax ymin ymax
-		float firstZ[2];
+		static constexpr size_t NumBoxes = 3;
+		float box[NumBoxes][4];				// [0] inside objects, [1] after the first layer marker, [2] all; each is xmin xmax ymin ymax
+		float firstZ[NumBoxes];
 		float pos[3];
 		float lastE;
-		bool done[2];
-		bool relXYZ, relE, inObject, skipFragment;
+		bool done[NumBoxes];
+		bool relXYZ, relE, inObject, skipFragment, afterLayerMarker;
 
 		void Start(FileStore *f) noexcept;
 		bool Step() noexcept;				// returns true when the scan is finished
@@ -67,7 +69,7 @@ namespace
 	void PrintAreaScan::Start(FileStore *f) noexcept
 	{
 		file = f;
-		for (size_t i = 0; i < 2; ++i)
+		for (size_t i = 0; i < NumBoxes; ++i)
 		{
 			box[i][0] = box[i][2] = 1.0e30;
 			box[i][1] = box[i][3] = -1.0e30;
@@ -76,7 +78,7 @@ namespace
 		}
 		pos[0] = pos[1] = pos[2] = 0.0;
 		lastE = 0.0;
-		relXYZ = inObject = skipFragment = false;
+		relXYZ = inObject = skipFragment = afterLayerMarker = false;
 		relE = true;
 	}
 
@@ -92,6 +94,11 @@ namespace
 	void PrintAreaScan::ProcessLine(const char *_ecv_array s) noexcept
 	{
 		while (*s == ' ' || *s == '\t') { ++s; }
+		if (StringStartsWith(s, ";LAYER_CHANGE"))
+		{
+			afterLayerMarker = true;
+			return;
+		}
 		const char cmd = *s;
 		if (cmd != 'G' && cmd != 'M')
 		{
@@ -138,11 +145,11 @@ namespace
 					extruding = (relE) ? v > 0.0 : v > lastE + 1.0e-5;
 					if (!relE) { lastE = v; }
 				}
-				if (extruding)
+				if (extruding && (newPos[0] != pos[0] || newPos[1] != pos[1]))		// an E-only move (un-retract) is not printing
 				{
-					for (size_t which = 0; which < 2; ++which)
+					for (size_t which = 0; which < NumBoxes; ++which)
 					{
-						if (done[which] || (which == 0 && !inObject))
+						if (done[which] || (which == 0 && !inObject) || (which == 1 && !afterLayerMarker))
 						{
 							continue;
 						}
@@ -193,9 +200,10 @@ namespace
 			{
 				ProcessLine(line);
 			}
-			if (done[0] || (done[1] && box[0][1] < box[0][0]))
+			// Finished when the first layer of the best source that has any extrusion is done
+			if (done[0] || (box[0][1] < box[0][0] && (done[1] || (box[1][1] < box[1][0] && done[2]))))
 			{
-				return true;						// first layer of the objects done, or of everything when there are no objects
+				return true;
 			}
 		}
 		return false;
@@ -203,9 +211,14 @@ namespace
 
 	const float *_ecv_null PrintAreaScan::Result() const noexcept
 	{
-		return (box[0][1] >= box[0][0]) ? box[0]
-				: (box[1][1] >= box[1][0]) ? box[1]
-					: nullptr;
+		for (size_t i = 0; i < NumBoxes; ++i)
+		{
+			if (box[i][1] >= box[i][0])
+			{
+				return box[i];
+			}
+		}
+		return nullptr;
 	}
 }
 
