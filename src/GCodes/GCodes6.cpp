@@ -12,6 +12,205 @@
 #include <Movement/Move.h>
 #include <Endstops/ZProbe.h>
 
+#if HAS_MASS_STORAGE
+# include <PrintMonitor/PrintMonitor.h>
+# include <Storage/MassStorage.h>
+# include <General/SafeStrtod.h>
+
+// Adaptive mesh (M557 ... L<margin>): find the XY extent of the first layer of the file being printed.
+// Only extrusion inside M486 object labels counts, so a purge line or skirt outside the objects is not meshed.
+// If the file has no object labels, all first-layer extrusion counts.
+// The scan reads the file a slice at a time so that M557 can return notFinished between slices.
+namespace
+{
+	struct PrintAreaScan
+	{
+		FileStore *_ecv_null file = nullptr;
+		uint32_t lastStepMillis = 0;
+		float box[2][4];					// [0] inside objects, [1] all extrusion; each is xmin xmax ymin ymax
+		float firstZ[2];
+		float pos[3];
+		float lastE;
+		bool done[2];
+		bool relXYZ, relE, inObject, skipFragment;
+
+		void Start(FileStore *f) noexcept;
+		bool Step() noexcept;				// returns true when the scan is finished
+		const float *_ecv_null Result() const noexcept;
+
+	private:
+		void ProcessLine(const char *_ecv_array s) noexcept;
+		void Include(size_t which, float x, float y) noexcept;
+	};
+
+	PrintAreaScan printAreaScan;
+
+	// Find a parameter on a G-code line, skipping quoted strings and stopping at a comment
+	bool FindParam(const char *_ecv_array s, char letter, float& val) noexcept
+	{
+		bool inQuotes = false;
+		for (; *s != 0 && (inQuotes || *s != ';'); ++s)
+		{
+			if (*s == '"')
+			{
+				inQuotes = !inQuotes;
+			}
+			else if (!inQuotes && *s == letter)
+			{
+				val = SafeStrtof(s + 1);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void PrintAreaScan::Start(FileStore *f) noexcept
+	{
+		file = f;
+		for (size_t i = 0; i < 2; ++i)
+		{
+			box[i][0] = box[i][2] = 1.0e30;
+			box[i][1] = box[i][3] = -1.0e30;
+			firstZ[i] = NAN;
+			done[i] = false;
+		}
+		pos[0] = pos[1] = pos[2] = 0.0;
+		lastE = 0.0;
+		relXYZ = inObject = skipFragment = false;
+		relE = true;
+	}
+
+	void PrintAreaScan::Include(size_t which, float x, float y) noexcept
+	{
+		float *_ecv_array b = box[which];
+		if (x < b[0]) { b[0] = x; }
+		if (x > b[1]) { b[1] = x; }
+		if (y < b[2]) { b[2] = y; }
+		if (y > b[3]) { b[3] = y; }
+	}
+
+	void PrintAreaScan::ProcessLine(const char *_ecv_array s) noexcept
+	{
+		while (*s == ' ' || *s == '\t') { ++s; }
+		const char cmd = *s;
+		if (cmd != 'G' && cmd != 'M')
+		{
+			return;
+		}
+		const char *_ecv_array end;
+		const uint32_t code = StrToU32(s + 1, &end);
+		if (end == s + 1 || *end == '.')
+		{
+			return;									// no number, or a fractional code such as G29.1
+		}
+
+		float v;
+		if (cmd == 'M')
+		{
+			if (code == 82) { relE = false; }
+			else if (code == 83) { relE = true; }
+			else if (code == 486 && FindParam(end, 'S', v)) { inObject = (v >= 0.0); }
+			return;
+		}
+
+		switch (code)
+		{
+		case 90: relXYZ = false; break;
+		case 91: relXYZ = true; break;
+		case 92:
+			if (FindParam(end, 'E', v)) { lastE = v; }
+			for (size_t axis = 0; axis < 3; ++axis)
+			{
+				if (FindParam(end, "XYZ"[axis], v)) { pos[axis] = v; }
+			}
+			break;
+
+		case 0: case 1: case 2: case 3:
+			{
+				float newPos[3] = { pos[0], pos[1], pos[2] };
+				for (size_t axis = 0; axis < 3; ++axis)
+				{
+					if (FindParam(end, "XYZ"[axis], v)) { newPos[axis] = (relXYZ) ? pos[axis] + v : v; }
+				}
+				bool extruding = false;
+				if (FindParam(end, 'E', v))
+				{
+					extruding = (relE) ? v > 0.0 : v > lastE + 1.0e-5;
+					if (!relE) { lastE = v; }
+				}
+				if (extruding)
+				{
+					for (size_t which = 0; which < 2; ++which)
+					{
+						if (done[which] || (which == 0 && !inObject))
+						{
+							continue;
+						}
+						if (std::isnan(firstZ[which]))
+						{
+							firstZ[which] = newPos[2];
+						}
+						else if (newPos[2] > firstZ[which] + 0.01)
+						{
+							done[which] = true;		// the next layer has started
+							continue;
+						}
+						Include(which, pos[0], pos[1]);
+						Include(which, newPos[0], newPos[1]);
+						float i, j;
+						if (code >= 2 && FindParam(end, 'I', i) && FindParam(end, 'J', j))
+						{
+							// Arc: include the whole circle, which covers the arc
+							const float r = fastSqrtf(fsquare(i) + fsquare(j));
+							Include(which, pos[0] + i - r, pos[1] + j - r);
+							Include(which, pos[0] + i + r, pos[1] + j + r);
+						}
+					}
+				}
+				pos[0] = newPos[0]; pos[1] = newPos[1]; pos[2] = newPos[2];
+			}
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	bool PrintAreaScan::Step() noexcept
+	{
+		lastStepMillis = millis();
+		char line[256];
+		for (unsigned int n = 0; n < 200; ++n)
+		{
+			const int len = file->ReadLine(line, sizeof(line));
+			if (len < 0)
+			{
+				return true;						// end of file
+			}
+			const bool fragment = skipFragment;	// the tail of a line too long for the buffer (only long comments are that long)
+			skipFragment = (len == (int)sizeof(line) - 1);
+			if (!fragment)
+			{
+				ProcessLine(line);
+			}
+			if (done[0] || (done[1] && box[0][1] < box[0][0]))
+			{
+				return true;						// first layer of the objects done, or of everything when there are no objects
+			}
+		}
+		return false;
+	}
+
+	const float *_ecv_null PrintAreaScan::Result() const noexcept
+	{
+		return (box[0][1] >= box[0][0]) ? box[0]
+				: (box[1][1] >= box[1][0]) ? box[1]
+					: nullptr;
+	}
+}
+
+#endif
+
 // This is called to execute a G30.
 // It sets wherever we are as the probe point P (probePointIndex) then probes the bed, or gets all its parameters from the arguments.
 // If X or Y are specified, use those; otherwise use the machine's coordinates.  If no Z is specified use the machine's coordinates.
@@ -350,6 +549,71 @@ GCodeResult GCodes::DefineGrid(GCodeBuffer& gb, const StringRef &reply) THROWS(G
 			return GCodeResult::error;
 		}
 	}
+
+#if HAS_MASS_STORAGE
+	// Adaptive mesh: L<margin> shrinks an X/Y grid to the first layer of the file being printed plus the margin, keeping the point spacing.
+	// Outside a print, or if the file has no first-layer extrusion, the full grid is used.
+	bool seenL = false;
+	float margin = 0.0;
+	gb.TryGetFValue('L', margin, seenL);
+	if (seenL && axesSeen && axesLetters[0] == 'X' && axesLetters[1] == 'Y')
+	{
+		PrintAreaScan& scan = printAreaScan;
+		if (scan.file != nullptr && millis() - scan.lastStepMillis > 2000)
+		{
+			scan.file->Close();						// left over from an M557 that was abandoned part way
+			scan.file = nullptr;
+		}
+		if (scan.file == nullptr)
+		{
+			const char *_ecv_array _ecv_null const fn = reprap.GetPrintMonitor().GetPrintingFilename();
+			FileStore *_ecv_null const f = (fn != nullptr) ? MassStorage::OpenFile(fn, OpenMode::read, 0) : nullptr;
+			if (f != nullptr)
+			{
+				scan.Start(f);
+			}
+		}
+
+		const float *_ecv_null area = nullptr;
+		if (scan.file != nullptr)
+		{
+			if (!scan.Step())
+			{
+				return GCodeResult::notFinished;
+			}
+			scan.file->Close();
+			scan.file = nullptr;
+			area = scan.Result();
+		}
+
+		if (area == nullptr)
+		{
+			reply.copy("adaptive mesh: no print area found, using the full grid");
+		}
+		else
+		{
+			for (size_t i = 0; i < 2; ++i)
+			{
+				float *_ecv_array const v = (i == 0) ? axis0Values : axis1Values;
+				float lo = max<float>(v[0], area[2 * i] - margin);
+				float hi = min<float>(v[1], area[2 * i + 1] + margin);
+				const float minRange = min<float>(v[1] - v[0], 10.0);
+				if (hi - lo < minRange)
+				{
+					// Very small print: widen it about its centre, staying inside the full grid
+					const float mid = constrain<float>(0.5 * (lo + hi), v[0] + 0.5 * minRange, v[1] - 0.5 * minRange);
+					lo = mid - 0.5 * minRange;
+					hi = mid + 0.5 * minRange;
+				}
+				const unsigned int n = max<unsigned int>(3, (unsigned int)ceilf((hi - lo)/spacings[i] - 0.001) + 1);
+				spacings[i] = (hi - lo)/(n - 1) * 0.9999;		// as for P, so that the far edge gets its row of points
+				v[0] = lo;
+				v[1] = hi;
+			}
+			reply.printf("adaptive mesh: X%.1f:%.1f Y%.1f:%.1f", (double)axis0Values[0], (double)axis0Values[1], (double)axis1Values[0], (double)axis1Values[1]);
+		}
+	}
+#endif
 
 	// If the axis letters were given as U and Y then the parser will find Y before it finds U. Swap them so that IDEX machines behave as the user expects, i.e. U behaves like X.
 	// An alternative would be to add a function to GCodeBuffer to report the position at which a letter was seen, then we could make it sensitive to the order of parameters in the command
