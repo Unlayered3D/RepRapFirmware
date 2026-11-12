@@ -21,8 +21,18 @@
 // Only extrusion inside M486 object labels counts, so a purge line or skirt outside the objects is not meshed.
 // If the file has no object labels, all first-layer extrusion counts.
 // The scan reads the file a slice at a time so that M557 can return notFinished between slices.
+//
+// PRINT BY OBJECT (2026-11-11, "adaptive mesh did not work for print by object"). A sequential print
+// finishes object 1 - every layer of it - before object 2's first layer appears, so "stop at the first
+// extrusion above the first layer" meshed object 1 alone. The slicer only says which kind of file it
+// is in its settings block at the END of the file, so the scan first reads the file's tail (cheap: one
+// seek) for Orca/Unlayered "print_sequence = by object", PrusaSlicer "complete_objects = 1" or Cura
+// "one_at_a_time". In such a file extrusion above the first layer is skipped instead of ending the
+// scan, and every first-layer move to the end of the file counts. Layer-by-layer files are unchanged.
 namespace
 {
+	constexpr FilePosition SettingsTailBytes = 65536;		// Orca's settings block is ~30-60 KB
+
 	struct PrintAreaScan
 	{
 		FileStore *_ecv_null file = nullptr;
@@ -33,6 +43,8 @@ namespace
 		float lastE;
 		bool done[2];
 		bool relXYZ, relE, inObject, skipFragment;
+		bool readingTail;					// still reading the settings block at the end of the file
+		bool sequential;					// print by object: keep scanning past the first object
 
 		void Start(FileStore *f) noexcept;
 		bool Step() noexcept;				// returns true when the scan is finished
@@ -78,6 +90,13 @@ namespace
 		lastE = 0.0;
 		relXYZ = inObject = skipFragment = false;
 		relE = true;
+		sequential = false;
+		const FilePosition len = f->Length();
+		readingTail = f->Seek((len > SettingsTailBytes) ? len - SettingsTailBytes : 0);
+		if (!readingTail)
+		{
+			(void)f->Seek(0);					// cannot read the tail: treat it as a layer-by-layer file
+		}
 	}
 
 	void PrintAreaScan::Include(size_t which, float x, float y) noexcept
@@ -152,8 +171,11 @@ namespace
 						}
 						else if (newPos[2] > firstZ[which] + 0.01)
 						{
-							done[which] = true;		// the next layer has started
-							continue;
+							if (!sequential)
+							{
+								done[which] = true;	// the next layer has started
+							}
+							continue;				// print by object: a later object's first layer may still come
 						}
 						Include(which, pos[0], pos[1]);
 						Include(which, newPos[0], newPos[1]);
@@ -183,6 +205,31 @@ namespace
 		for (unsigned int n = 0; n < 200; ++n)
 		{
 			const int len = file->ReadLine(line, sizeof(line));
+			if (readingTail)
+			{
+				if (len < 0)
+				{
+					readingTail = false;			// settings read: now the first layer, from the top
+					skipFragment = false;
+					if (!file->Seek(0))
+					{
+						return true;
+					}
+					continue;
+				}
+				if (line[0] == ';'
+					&& (   strstr(line, "print_sequence = by object") != nullptr		// Orca / Unlayered Slicer
+						|| strstr(line, "print_sequence = by group") != nullptr		// Orca: groups printed one after another
+						|| strstr(line, "print_sequence = by_object") != nullptr
+						|| strstr(line, "complete_objects = 1") != nullptr			// PrusaSlicer
+						|| strstr(line, "one_at_a_time") != nullptr					// Cura
+					   )
+				   )
+				{
+					sequential = true;
+				}
+				continue;
+			}
 			if (len < 0)
 			{
 				return true;						// end of file
